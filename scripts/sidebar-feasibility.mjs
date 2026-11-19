@@ -548,8 +548,22 @@ async function optionsPage(cdp, win, panel, runDir) {
   o.warmAppliesLiveToPanel = await until(() => evalIn(cdp, panel, `document.documentElement.dataset.treatment === "warm"`));
   await clickSelector(cdp, session, 'input[value="neutral"]');
   o.neutralAppliesLiveToPanel = await until(() => evalIn(cdp, panel, `document.documentElement.dataset.treatment === "neutral"`));
+  // Phase 2.1: the tab title names the extension; the panel shows our icon for our own page.
+  o.titleNamesExtension = await evalIn(cdp, session, `document.title === chrome.runtime.getManifest().name + " options"`);
+  o.ownPageRowShowsOurIcon = await until(() => evalIn(cdp, panel, `(() => {
+    const i = document.querySelector('[data-key="t:${tabId}"] img.ico');
+    return !!i && i.src === chrome.runtime.getURL("icons/icon-32.png") && i.complete && i.naturalWidth > 0;
+  })()`));
   await inExt(cdp, `chrome.tabs.update(${wasActive}, { active: true }).then(() => chrome.tabs.remove(${tabId}))`);
   await sleep(400);
+  // The ⚙ button opens the options page; rows are 24 px.
+  await clickSelector(cdp, panel, "#options");
+  const opened = await until(() => inExt(cdp, `chrome.tabs.query({ url: "${ext(cdp, "options.html")}" }).then((ts) => ts[0]?.id ?? null)`));
+  o.gearOpensOptions = !!opened;
+  if (opened) await inExt(cdp, `chrome.tabs.remove(${opened})`);
+  await sleep(400);
+  o.rowHeightPx = await evalIn(cdp, panel, `document.querySelector(".row").getBoundingClientRect().height`);
+  o.rowsAre24px = o.rowHeightPx === 24;
   return o;
 }
 
@@ -567,16 +581,17 @@ async function shortcut(cdp) {
   // Shortcuts reach only the focused window, and macOS makes Chrome the active app only while a
   // person is using the Mac (an unattended run can't activate it, not even with `open -a`).
   s.windowFocusedAtKey = await inExt(cdp, `chrome.windows.get(${wid}).then((w) => w.focused)`);
-  const CTRL = 2, SHIFT = 8;
+  // The manifest's default: Command+Shift+S on macOS (CDP Meta = 4), Ctrl+Shift+S elsewhere.
+  const SHIFT = 8, MOD = process.platform === "darwin" ? 4 : 2;
   for (const type of ["rawKeyDown", "keyUp"]) {
-    await cdp.send("Input.dispatchKeyEvent", { type, modifiers: CTRL | SHIFT, key: "S", code: "KeyS", windowsVirtualKeyCode: 83, nativeVirtualKeyCode: 1 }, page.session);
+    await cdp.send("Input.dispatchKeyEvent", { type, modifiers: MOD | SHIFT, key: "S", code: "KeyS", windowsVirtualKeyCode: 83, nativeVirtualKeyCode: 1 }, page.session);
   }
   await sleep(1500);
   s.cdpKeyOpenedPanel = (await panelWindows(cdp)).filter((w) => w === wid).length > before;
   s.panelWindowsAfterKey = await panelWindows(cdp);
   // Pressed again, the same shortcut should close it (the action toggles the panel).
   for (const type of ["rawKeyDown", "keyUp"]) {
-    await cdp.send("Input.dispatchKeyEvent", { type, modifiers: CTRL | SHIFT, key: "S", code: "KeyS", windowsVirtualKeyCode: 83, nativeVirtualKeyCode: 1 }, page.session);
+    await cdp.send("Input.dispatchKeyEvent", { type, modifiers: MOD | SHIFT, key: "S", code: "KeyS", windowsVirtualKeyCode: 83, nativeVirtualKeyCode: 1 }, page.session);
   }
   await sleep(1500);
   s.panelWindowsAfterSecondKey = await panelWindows(cdp);
@@ -586,7 +601,7 @@ async function shortcut(cdp) {
   try {
     const { ui } = await uiTree(cdp.uiPort);
     try {
-      await ui.send("Input.dispatchKeyEvent", { type: "keyDown", modifiers: CTRL | SHIFT, key: "S", code: "KeyS", windowsVirtualKeyCode: 83 });
+      await ui.send("Input.dispatchKeyEvent", { type: "keyDown", modifiers: MOD | SHIFT, key: "S", code: "KeyS", windowsVirtualKeyCode: 83 });
       s.uiDevtoolsInput = "accepted";
     } catch (e) {
       s.uiDevtoolsInput = "unsupported: " + e.message.slice(0, 120);

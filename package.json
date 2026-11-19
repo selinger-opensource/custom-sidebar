@@ -1,7 +1,7 @@
 {
   "name": "compact-sidebar",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A compact Chrome side panel with your bookmarks above this window's tabs, plus an optional nightly sweep of unused tabs (MV3 extension).",
   "license": "MIT",
   "type": "module",

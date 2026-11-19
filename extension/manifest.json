@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Compact Sidebar",
   "description": "A compact side panel with your bookmarks above this window's tabs, plus an optional nightly sweep of unused tabs.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minimum_chrome_version": "150",
   "background": { "service_worker": "background.js", "type": "module" },
   "permissions": ["alarms", "bookmarks", "favicon", "sidePanel", "storage", "tabs", "webNavigation"],
@@ -13,7 +13,7 @@
   },
   "commands": {
     "_execute_action": {
-      "suggested_key": { "default": "Ctrl+Shift+S", "mac": "MacCtrl+Shift+S" },
+      "suggested_key": { "default": "Ctrl+Shift+S", "mac": "Command+Shift+S" },
       "description": "Open or close the Sidebar"
     }
   },

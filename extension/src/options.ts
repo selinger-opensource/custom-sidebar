@@ -1,6 +1,9 @@
 // Options page: the Sidebar's colour treatment and the nightly sweep's switch.
 import { COLOUR_TREATMENT_KEY, SWEEP_ENABLED_KEY, colourTreatment, sweepEnabled, sweepSwitch } from "./settings";
 
+// The tab title names the extension: "<name> options", from the manifest so builds can differ.
+document.title = `${chrome.runtime.getManifest().name} options`;
+
 const sweep = document.getElementById("sweep") as HTMLInputElement;
 const treatments = [...document.querySelectorAll<HTMLInputElement>('input[name="colourTreatment"]')];
 

@@ -26,11 +26,16 @@ const host = (url: string) => {
     return "";
   }
 };
-/** Chrome's favicon cache by page URL; a never-visited page shows Chrome's default globe. */
+/** Chrome's favicon cache by page URL; a never-visited page shows Chrome's default globe. Our own
+ *  pages (options, the panel) aren't in that cache, so they show the extension's icon. */
+const OWN_PAGES = chrome.runtime.getURL("");
+const img = (src: string) => `<img class="ico" alt="" src="${esc(src)}">`;
 const favicon = (url: string) =>
-  /^https?:/.test(url)
-    ? `<img class="ico" alt="" src="${esc(chrome.runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(url)}&size=32`))}">`
-    : `<span class="ico">${ICON.globe}</span>`;
+  url.startsWith(OWN_PAGES)
+    ? img(chrome.runtime.getURL("icons/icon-32.png"))
+    : /^https?:/.test(url)
+      ? img(chrome.runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(url)}&size=32`))
+      : `<span class="ico">${ICON.globe}</span>`;
 
 // --- Rows to HTML. ---------------------------------------------------------------------------
 function rowHtml(row: Row): string {
@@ -157,6 +162,8 @@ app.addEventListener("keydown", (e) => {
   if (result.focus) moveStop(result.focus, true);
   if (result.command) void sidebar.run(result.command, { background: e.metaKey || e.ctrlKey }).catch(report);
 });
+
+document.getElementById("options")!.addEventListener("click", () => void chrome.runtime.openOptionsPage().catch(report));
 
 // --- Colour treatment, live from the options page. ----------------------------------------------
 const applyTreatment = (stored: unknown) => {

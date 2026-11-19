@@ -27,7 +27,7 @@ There's no Chrome Web Store listing. Chrome 150 or newer.
 
 1. Download the latest `compact-sidebar-<version>.zip` from [Releases](../../releases) and unzip it somewhere permanent (Chrome runs the extension from that folder).
 2. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and choose the unzipped folder.
-3. Pin the icon in the toolbar. Click it, or press **Ctrl+Shift+S**, to open or close the panel. Change the shortcut at `chrome://extensions/shortcuts`.
+3. Pin the icon in the toolbar. Click it, or press **Ctrl+Shift+S** (**⇧⌘S** on a Mac), to open or close the panel. Change the shortcut at `chrome://extensions/shortcuts`.
 
 Recommended layout, for the smallest footprint: in Chrome's settings put the **side panel on the left**, and if you use vertical tabs, collapse them to the narrow icon rail. Chrome's tab strip itself can't be hidden by an extension, so your tabs appear both there and in the panel.
 
