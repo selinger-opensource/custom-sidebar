@@ -75,8 +75,11 @@ async function recallSites(): Promise<void> {
   const expired: string[] = [];
   for (const [key, value] of Object.entries(await chrome.storage.local.get(null))) {
     if (!key.startsWith(SITE_MEMORY)) continue;
-    const { url, at } = value as Remembered;
-    if (now - at < (url ? 7 : 1) * DAY) siteFound.set(key.slice(SITE_MEMORY.length), url);
+    const origin = key.slice(SITE_MEMORY.length);
+    const { url, at } = (value ?? {}) as Partial<Remembered>;
+    // Only what a lookup could have found: one of the site's own two icon addresses, or none.
+    const valid = (url === null || (typeof url === "string" && siteIconUrls(`${origin}/`).includes(url))) && typeof at === "number";
+    if (valid && now - at < (url ? 7 : 1) * DAY) siteFound.set(origin, url);
     else expired.push(key);
   }
   if (expired.length > 0) await chrome.storage.local.remove(expired);
@@ -395,14 +398,15 @@ function openEditor(key: string): void {
   // null = back to the default (site or folder) icon.
   let chosen: string | null | undefined;
   const slot = el.querySelector<HTMLElement>(".ico")!;
-  const defaultIcon = row.kind === "folder" ? ICON.folder : favicon(row.url, true);
+  // Resolved each time it's shown, so a site-icons switch-off while editing is respected.
+  const defaultIcon = () => (row.kind === "folder" ? ICON.folder : favicon(row.url, true));
   const iconButton = Object.assign(document.createElement("button"), { className: "icon-pick", type: "button" });
   iconButton.setAttribute("aria-label", "Choose icon");
   iconButton.setAttribute("aria-haspopup", "dialog");
   iconButton.title = "Choose icon";
   const showIcon = () => {
     const icon = chosen === undefined ? row.icon : chosen ?? undefined;
-    iconButton.innerHTML = icon !== undefined ? iconHtml(icon) : defaultIcon;
+    iconButton.innerHTML = icon !== undefined ? iconHtml(icon) : defaultIcon();
   };
   showIcon();
   slot.replaceWith(iconButton);

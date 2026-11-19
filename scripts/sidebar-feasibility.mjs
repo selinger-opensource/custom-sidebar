@@ -834,7 +834,10 @@ async function bookmarkEditSteps(cdp, win, tabsIn, e, found, runDir) {
   // is forgotten and the row falls back.
   const memory = () => bm(`chrome.storage.local.get(null).then((s) => Object.fromEntries(Object.entries(s).filter(([k]) => k.startsWith("siteIcon:"))))`);
   e.lookupRemembered = !!(await until(async () => (await memory())[`siteIcon:http://localhost:${port}`]?.url === `http://localhost:${port}/favicon.ico`));
-  await bm(`chrome.storage.local.set({ "siteIcon:http://localhost:9": { url: "http://localhost:9/gone.ico", at: Date.now() } })`);
+  // A remembered icon that no longer loads (its own /favicon.ico, now unreachable), and a planted
+  // entry pointing at another site: neither is shown; the planted one is discarded on recall.
+  await bm(`chrome.storage.local.set({ "siteIcon:http://localhost:9": { url: "http://localhost:9/favicon.ico", at: Date.now() },
+    "siteIcon:http://127.0.0.1:${port}": { url: "https://elsewhere.invalid/x.png", at: Date.now() } })`);
   const asked = siteIconRequests.filter((h) => h === `localhost:${port}`).length;
   await cdp.send("Page.reload", {}, panel);
   await sleep(1200);
@@ -846,6 +849,7 @@ async function bookmarkEditSteps(cdp, win, tabsIn, e, found, runDir) {
   // No lookup, and with the site's usual caching not even a download: zero requests.
   e.reopenAsksNoSite = siteIconRequests.filter((h) => h === `localhost:${port}`).length === asked;
   e.reopenRequests = siteIconRequests.filter((h) => h === `localhost:${port}`).length - asked;
+  e.foreignRememberedUrlDiscarded = !!(await until(async () => (await memory())[`siteIcon:http://127.0.0.1:${port}`]?.url !== "https://elsewhere.invalid/x.png"));
   e.brokenRememberedIconForgotten = !!(await until(async () => {
     const i = await imgFor(deadId);
     return !!i && i.src.startsWith("chrome-extension://") && i.ok && (await memory())["siteIcon:http://localhost:9"] === undefined;
