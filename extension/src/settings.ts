@@ -25,9 +25,17 @@ export const sweepSwitchedOn = (oldValue: unknown, newValue: unknown): boolean =
   sweepEnabled(newValue) && !sweepEnabled(oldValue);
 
 /** Fetch a site icon from the bookmark's own site when Chrome has none cached (GLOSSARY.md: Site
- *  icon). On unless switched off. */
+ *  icon). Off unless switched on: new installs never contact sites until someone chooses it. */
 export const SITE_ICONS_KEY = "siteIcons";
-export const siteIcons = (stored: unknown): boolean => stored !== false;
+export const siteIcons = (stored: unknown): boolean => stored === true;
+
+/** Versions 0.4.0 and 0.5.0 had site icons on by default. An install updated from one of them
+ *  whose switch was never set keeps them on: true means "write siteIcons: true". */
+export function keepSiteIconsOnUpdate(previousVersion: string | undefined, stored: unknown): boolean {
+  if (stored !== undefined || previousVersion === undefined) return false;
+  const [major = 0, minor = 0] = previousVersion.split(".").map(Number);
+  return major === 0 && minor >= 4 && minor < 6;
+}
 
 /** What site-icon lookups found, one storage key per site (`siteIcon:<origin>`). */
 export const SITE_MEMORY_PREFIX = "siteIcon:";

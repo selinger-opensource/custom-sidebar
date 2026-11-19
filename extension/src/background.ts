@@ -2,7 +2,7 @@
 // icon (and its keyboard shortcut) toggle the Sidebar. Event wiring only; the sweep's behavior
 // lives in sweep.ts, the Sidebar's in sidebar.ts.
 import { LAST_USE_KEY, chromeBrowser } from "./chrome-browser";
-import { SITE_ICONS_KEY, SITE_MEMORY_PREFIX, SWEEP_ENABLED_KEY, siteIcons, sweepEnabled, sweepSwitchedOn } from "./settings";
+import { SITE_ICONS_KEY, SITE_MEMORY_PREFIX, SWEEP_ENABLED_KEY, keepSiteIconsOnUpdate, siteIcons, sweepEnabled, sweepSwitchedOn } from "./settings";
 import { isSweepDue, runSweep, type Browser, type LastUseRecords, type SweepReceipt } from "./sweep";
 
 const ALARM = "sweep-check";
@@ -156,6 +156,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && enabled && sweepSwitchedOn(enabled.oldValue, enabled.newValue)) {
     void sweepSerial(() => chrome.storage.local.set({ lastSweepAt: Date.now() }));
   }
+});
+
+// Updated from 0.4.0/0.5.0 (site icons on by default then) with the switch never set: keep them on.
+chrome.runtime.onInstalled.addListener(({ reason, previousVersion }) => {
+  if (reason !== "update") return;
+  void chrome.storage.local.get(SITE_ICONS_KEY).then((stored) => {
+    if (keepSiteIconsOnUpdate(previousVersion, stored[SITE_ICONS_KEY])) return chrome.storage.local.set({ [SITE_ICONS_KEY]: true });
+  });
 });
 
 // Site icons switched off, however and whether or not a panel is open: forget every looked-up site.

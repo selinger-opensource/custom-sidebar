@@ -799,6 +799,10 @@ async function bookmarkEditSteps(cdp, win, tabsIn, e, found, runDir) {
     return none;
   })();
 
+  // Site icons are off on a fresh install (0.6.0); the checks below switch them on.
+  e.siteIconsOffByDefault = (await bm(`chrome.storage.local.get("siteIcons").then((s) => s.siteIcons)`)) === undefined
+    && siteIconRequests.length === 0;
+  await bm(`chrome.storage.local.set({ siteIcons: true })`);
   const port = new URL(ORIGIN).port;
   // Evidence for the no-cors redirect rule (learnings · no-cors-redirect-modes).
   e.fetchProbe = await evalIn(cdp, panel, `Promise.all(["error", "follow", "manual"].map((redirect) =>
@@ -881,6 +885,29 @@ async function bookmarkEditSteps(cdp, win, tabsIn, e, found, runDir) {
   }, 6000));
 
   await bm(`chrome.bookmarks.removeTree("${lab.folder}")`);
+
+  // 8. Tidy: closes every tab of this window but the selected one and pinned ones; Undo reopens them in place.
+  e.step = "8. Tidy";
+  const before = await tabsIn(win.human);
+  const [first] = before;
+  await bm(`chrome.tabs.update(${first.id}, { pinned: true })`);
+  const pinnedFirst = await tabsIn(win.human); // pinning can move it; this is the order Undo should restore
+  const selected = pinnedFirst.find((t) => t.active);
+  await until(() => evalIn(cdp, panel, `!!document.querySelector("[data-tidy]")`));
+  await clickSelector(cdp, panel, "[data-tidy]");
+  e.tidyKeepsSelectedAndPinned = !!(await until(async () => {
+    const left = await tabsIn(win.human);
+    return left.length === 2 && left.some((t) => t.id === selected.id) && left.some((t) => t.id === first.id);
+  }));
+  e.tidyNotice = !!(await until(() => evalIn(cdp, panel, `/^Closed [0-9]+ tabs?$/.test(document.querySelector("#notice .notice-text")?.textContent ?? "")`)));
+  e.tidyButtonHidesWhenNothingToClose = !!(await until(() => evalIn(cdp, panel, `!document.querySelector("[data-tidy]")`)));
+  await shot(cdp, panel, join(runDir, "tidy-undo.png"));
+  await clickSelector(cdp, panel, "#undo");
+  e.tidyUndoReopensInOrder = !!(await until(async () => {
+    const now = await tabsIn(win.human);
+    return JSON.stringify(now.map((t) => t.url)) === JSON.stringify(pinnedFirst.map((t) => t.url)) && now.find((t) => t.active)?.id === selected.id;
+  }, 6000));
+  e.tidyOrder = { before: pinnedFirst.map((t) => t.url), after: (await tabsIn(win.human)).map((t) => t.url) };
 }
 
 async function optionsPage(cdp, win, panel, runDir) {

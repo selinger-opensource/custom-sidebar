@@ -15,6 +15,8 @@ const ICON = {
   globe: svg('<circle cx="8" cy="8" r="5.5"/><path d="M2.5 8h11M8 2.5c1.6 1.6 2.3 3.5 2.3 5.5S9.6 11.9 8 13.5C6.4 11.9 5.7 10 5.7 8S6.4 4.1 8 2.5z"/>'),
   close: svg('<path d="M5 5l6 6M11 5l-6 6"/>'),
   plus: svg('<path d="M8 3.5v9M3.5 8h9"/>'),
+  // A broom: Tidy.
+  tidy: svg('<path d="M13.5 2.5 8.6 7.4"/><path d="M6.6 6.9 9.1 9.4 8.2 13.5H2.5V8.6z"/><path d="M4.4 13.5 5.6 11M6.4 13.5 7.2 11.6"/>'),
   audio: svg('<path d="M3 6.5h2l3-2.5v8L5 9.5H3zM10.5 6a2.5 2.5 0 0 1 0 4M12 4.5a4.6 4.6 0 0 1 0 7"/>', 14),
 };
 
@@ -47,7 +49,7 @@ const siteFound = new Map<string, string | null>();
  *  Only the former take the site's icon: a page Chrome knows keeps its own (Docs and Sheets
  *  share a site but not an icon). */
 const pageDefault = new Map<string, boolean>();
-let siteIconsOn = true;
+let siteIconsOn = false; // until the stored switch is read
 /** `fromSite`: may this row ask the page's site for its icon? Only bookmarks: a tab's site is
  *  open already, and the panel never contacts a site you haven't bookmarked. */
 const favicon = (url: string, fromSite = false) => {
@@ -86,6 +88,10 @@ function rememberSite(origin: string, url: string | null): void {
 // (Switching site icons off forgets every site: background.ts, so it works with no panel open.)
 const forgetSite = (origin: string) => chrome.storage.local.remove(SITE_MEMORY + origin);
 
+/** Tidy on the Tabs heading, when there's something to close; reachable with Tab (deliberately
+ *  no key on the heading itself: one stray Delete would close the window's tabs). */
+const tidyButton = (n: number) =>
+  n > 0 ? `<button class="icon-btn tidy" data-tidy aria-label="Close ${n} other tab${n === 1 ? "" : "s"}" title="Close other tabs (${n})">${ICON.tidy}</button>` : "";
 const emoji = (icon: string) => `<span class="emoji" aria-hidden="true">${esc(icon)}</span>`;
 const FOLDER_FILLED = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.6c0-.6.5-1.1 1.1-1.1h3l1.4 1.4h5.4c.6 0 1.1.5 1.1 1.1v5.4c0 .6-.5 1.1-1.1 1.1H3.1c-.6 0-1.1-.5-1.1-1.1z"/></svg>`;
 /** A Bookmark icon: a coloured folder (folder:<colour>) or an emoji. */
@@ -101,7 +107,7 @@ function rowHtml(row: Row): string {
   switch (row.kind) {
     case "section":
       return `<div class="section-head${row.section === "tabs" ? " sticky" : ""}" role="button" aria-expanded="${row.open}" ${attrs}>
-        ${ICON.chev}<span>${row.label}</span><span class="grow"></span><span class="count">${row.count ?? ""}</span></div>`;
+        ${ICON.chev}<span>${row.label}</span><span class="grow"></span>${tidyButton(row.tidy ?? 0)}<span class="count">${row.count ?? ""}</span></div>`;
     case "folder":
       return `<div class="row folder" role="treeitem" aria-level="${row.depth + 1}" aria-expanded="${row.open}" style="--depth:${row.depth}" title="${esc(row.title)}" ${attrs}>
         ${ICON.chev}<span class="ico">${row.icon !== undefined ? iconHtml(row.icon) : ICON.folder}</span><span class="label">${esc(row.title)}</span><span class="folder-count">${row.count}</span></div>`;
@@ -206,6 +212,10 @@ app.addEventListener("click", (e) => {
   if (close) {
     e.stopPropagation();
     return void sidebar.run({ type: "closeTab", id: Number(close.dataset.close) }).catch(report);
+  }
+  if (e.target instanceof Element && e.target.closest("[data-tidy]")) {
+    e.stopPropagation();
+    return void sidebar.run({ type: "closeOtherTabs" }).catch(report);
   }
   const row = findRow(rowOf(e.target)?.dataset.key);
   if (!row || (overlay?.kind === "editor" && overlay.key === row.key)) return;

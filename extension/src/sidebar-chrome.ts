@@ -7,10 +7,11 @@ export const FOLDING_KEY = "sidebarFolding";
 /** One storage key per Bookmark icon: `icon:<bookmark id>`. */
 export const ICON_KEY_PREFIX = "icon:";
 
+// Before its first page commits, a tab's url is "" and pendingUrl has the address.
 const toTabInfo = (t: chrome.tabs.Tab): TabInfo[] =>
   t.id === undefined || t.id === chrome.tabs.TAB_ID_NONE
     ? []
-    : [{ id: t.id, title: t.title ?? "", url: t.url ?? t.pendingUrl ?? "", active: t.active, audible: t.audible ?? false }];
+    : [{ id: t.id, title: t.title ?? "", url: t.url || t.pendingUrl || "", active: t.active, audible: t.audible ?? false, pinned: t.pinned }];
 
 export const chromeSidebar: SidebarBrowser = {
   async currentWindowId() {
@@ -97,6 +98,23 @@ export const chromeSidebar: SidebarBrowser = {
 
   async newTab(windowId) {
     await chrome.tabs.create({ windowId });
+  },
+
+  async closeTabs(tabIds) {
+    const results = await Promise.allSettled(tabIds.map((id) => chrome.tabs.remove(id)));
+    return tabIds.filter((_, i) => results[i]!.status === "fulfilled");
+  },
+
+  async reopenTabs(windowId, tabs) {
+    const failed = [];
+    for (const tab of [...tabs].sort((a, b) => a.index - b.index)) {
+      try {
+        await chrome.tabs.create({ windowId, index: tab.index, active: false, ...(tab.url && { url: tab.url }) });
+      } catch {
+        failed.push(tab);
+      }
+    }
+    return failed;
   },
 
   async moveBookmark(id, to) {

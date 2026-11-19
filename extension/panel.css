@@ -181,3 +181,7 @@ svg { flex: none; }
 .colour-row { display: grid; grid-template-columns: repeat(9, 1fr); gap: 2px; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--divider); }
 .colour-row button { all: unset; height: 26px; border-radius: 6px; display: grid; place-items: center; }
 .colour-row button:hover, .colour-row button:focus-visible { background: var(--hover); box-shadow: inset 0 0 0 2px var(--focus); }
+
+/* ---- Tidy (Tabs heading) ------------------------------------------------------------------ */
+.section-head .tidy { width: 18px; height: 18px; color: var(--muted); margin-right: 2px; }
+.section-head .tidy:hover { color: var(--text); }

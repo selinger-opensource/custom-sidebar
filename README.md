@@ -14,8 +14,9 @@ A Chrome extension that puts your **bookmarks above the tabs of the current wind
 
 - **Bookmarks** from Chrome's own bookmarks: the bookmarks bar inline, folders that expand, "Other bookmarks" as a folder. Clicking one opens it in this window (⌘/Ctrl-click or middle-click: in the background).
 - **Edit bookmarks in place:** drag to move bookmarks and folders, drag a tab in to save it, and right-click for Edit (title and URL), Delete, New folder and Add current tab. Keys: F2 edit, Delete delete, ⌥↑/⌥↓ move, ⌘/Ctrl+Z undo, Shift+F10 menu. The last edit can be undone from the footer.
-- **Icons:** give any bookmark or folder an emoji in the editor (a grid of common ones, or any emoji through your system's emoji picker), or give a folder a colour (Chrome's tab-group colours). Bookmarks you've never visited get their site's icon (see Privacy).
+- **Icons:** give any bookmark or folder an emoji in the editor (a grid of common ones, or any emoji through your system's emoji picker), or give a folder a colour (Chrome's tab-group colours). Optionally, bookmarks you've never visited can show their site's icon (off by default; see Privacy).
 - **Tabs** of the window the panel sits in, in tab-strip order: click to switch, × or middle-click to close, and a New tab row. Each window has its own independent panel.
+- **Tidy:** the broom on the Tabs heading closes every tab of the window except the selected one and pinned tabs. Undo (in the footer, or ⌘/Ctrl+Z) reopens them where they were, though without their back history (Chrome's own Reopen closed tab still has that).
 - Both sections fold, and the panel remembers which folders are open.
 - Updates live from Chrome's events; nothing polls.
 - Two colour treatments, **Neutral** (like Chrome, the default) and **Warm**, each following your system's light or dark mode.
@@ -37,6 +38,8 @@ Recommended layout, for the smallest footprint: in Chrome's settings put the **s
 
 Options (⚙ at the bottom of the panel): colour treatment, site icons, and the nightly sweep's switch.
 
+**Site icons for never-visited bookmarks (off by default).** Chrome only has icons for pages you've visited, so a bookmark you've never opened shows a globe. Tick **Load missing icons from the bookmarked sites** in the options and the panel asks those bookmarks' own sites for their icon instead (details and what that means for privacy: [SECURITY.md](SECURITY.md)).
+
 ### Keyboard
 
 One tab stop for the whole list. ↑/↓, Home/End move; → opens a folder or steps into it, ← closes it or steps out (on a section heading, they fold the section); Enter or Space opens; Delete or Backspace closes a tab.
@@ -52,7 +55,7 @@ One tab stop for the whole list. ↑/↓, Home/End move; → opens a folder or s
 | `storage` | Settings, open folders, and the sweep's counts-only receipts, on your machine. |
 | `alarms`, `webNavigation` | The nightly sweep: a periodic "is it due?" check, and counting navigations as use. |
 
-No host permissions and no analytics. The only network requests are site icons for bookmarks you've never visited, fetched from those bookmarks' own sites (switch off in Options). See [SECURITY.md](SECURITY.md).
+No host permissions and no analytics. Out of the box it makes no network requests at all; the only ones it can make are site icons for bookmarks you've never visited, and only if you switch that on in the options. See [SECURITY.md](SECURITY.md).
 
 ## Known limits
 

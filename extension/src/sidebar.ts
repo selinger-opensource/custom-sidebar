@@ -25,6 +25,7 @@ export interface TabInfo {
   url: string;
   active: boolean;
   audible: boolean;
+  pinned: boolean;
 }
 
 /** Expanded bookmark folders and folded sections, remembered per profile. */
@@ -81,7 +82,8 @@ export function siteIconUrls(pageUrl: string): string[] {
 }
 
 export type Row =
-  | { kind: "section"; key: string; section: Section; label: string; open: boolean; count?: number; barId?: string }
+  /** `tidy` (Tabs only): how many tabs Tidy would close. */
+  | { kind: "section"; key: string; section: Section; label: string; open: boolean; count?: number; barId?: string; tidy?: number }
   | ({ kind: "folder"; key: string; id: string; title: string; depth: number; open: boolean; count: number; parent?: string; icon?: string } & Placed)
   | ({ kind: "bookmark"; key: string; id: string; title: string; url: string; depth: number; parent?: string; savedTitle: string; icon?: string } & Placed)
   | { kind: "tab"; key: string; id: number; title: string; url: string; active: boolean; audible: boolean }
@@ -122,6 +124,8 @@ export type Command =
   | { type: "newFolder"; at: Place; title: string }
   | { type: "addBookmark"; at: Place; title: string; url: string }
   | { type: "addCurrentTab"; at: Place }
+  /** Tidy (GLOSSARY.md): close every tab of this window but the selected one and pinned ones. */
+  | { type: "closeOtherTabs" }
   | { type: "undo" };
 
 /** What the footer says after a Bookmark edit; `id` changes with every new notice. */
@@ -197,7 +201,7 @@ function bookmarkRows(nodes: Rooted[], depth: number, expanded: Set<string>, ico
 
 export function sidebarRows(tree: BookmarkNode[], tabs: TabInfo[], folding: Folding, icons: BookmarkIcons = {}): Row[] {
   const folded = new Set(folding.folded);
-  const head = (section: Section, count?: number): Row => ({
+  const head = (section: Section, count?: number): Extract<Row, { kind: "section" }> => ({
     kind: "section",
     key: `s:${section}`,
     section,
@@ -208,7 +212,7 @@ export function sidebarRows(tree: BookmarkNode[], tabs: TabInfo[], folding: Fold
   const barId = tree[0]?.children?.find((n) => n.folderType === "bookmarks-bar")?.id;
   const rows: Row[] = [{ ...head("bookmarks"), ...(barId !== undefined && { barId }) }];
   if (!folded.has("bookmarks")) rows.push(...bookmarkRows(bookmarkRoots(tree), 0, new Set(folding.expanded), icons));
-  rows.push(head("tabs", tabs.length));
+  rows.push({ ...head("tabs", tabs.length), tidy: tabs.filter((t) => !t.active && !t.pinned).length });
   if (!folded.has("tabs")) {
     for (const t of tabs) {
       rows.push({ kind: "tab", key: `t:${t.id}`, id: t.id, title: t.title || t.url || "New Tab", url: t.url, active: t.active, audible: t.audible });
@@ -373,6 +377,11 @@ export interface SidebarBrowser {
   selectTab(tabId: number): Promise<void>;
   closeTab(tabId: number): Promise<void>;
   newTab(windowId: number): Promise<void>;
+  /** Closes tabs one by one; resolves to the IDs that did close. */
+  closeTabs(tabIds: number[]): Promise<number[]>;
+  /** Opens tabs again, in the background, at their old positions (ascending `index`), each on its
+   *  own; resolves to the ones that couldn't be opened. */
+  reopenTabs(windowId: number, tabs: ReopenedTab[]): Promise<ReopenedTab[]>;
   // Bookmark writes, in chrome.bookmarks' coordinates (see Place). All throw if a node is gone.
   moveBookmark(id: string, to: Place): Promise<void>;
   updateBookmark(id: string, changes: BookmarkFields): Promise<void>;
@@ -399,8 +408,15 @@ export interface BookmarkFields {
   url?: string;
 }
 
-/** How to reverse the last Bookmark edit. An edit keeps only the fields it changed, before and after. */
+/** A tab Tidy closed: where it was and what it showed. */
+export interface ReopenedTab {
+  url: string;
+  index: number;
+}
+
+/** How to reverse the last Bookmark edit (or Tidy). An edit keeps only the fields it changed, before and after. */
 type UndoRecord =
+  | { kind: "tabs"; tabs: ReopenedTab[] }
   | { kind: "move"; id: string; from: Place }
   | { kind: "edit"; id: string; before: BookmarkFields; after: BookmarkFields; icon?: { before: string | null; after: string | null } }
   | { kind: "remove"; node: BookmarkNode; at: Place; icons: BookmarkIcons }
@@ -628,6 +644,11 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
         case "create":
           await browser.removeBookmark(record.id, false); // never what was put into it since
           break;
+        case "tabs": {
+          const failed = await browser.reopenTabs(windowId, record.tabs);
+          if (failed.length > 0) return say(`Couldn't reopen ${failed.length} tab${failed.length === 1 ? "" : "s"}`, false);
+          break;
+        }
       }
       say("Undone", false);
     } catch {
@@ -686,6 +707,21 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
             }
             const id = await browser.createBookmark(command.at, node);
             return { id, record: { kind: "create", id }, text: `Added ‘${node.title}’` };
+          });
+        case "closeOtherTabs":
+          return serial(async () => {
+            const candidates = (await browser.tabs(windowId)).flatMap((t, index) => (t.active || t.pinned ? [] : [{ id: t.id, url: t.url, index }]));
+            if (candidates.length === 0) return undefined;
+            // Read again right before closing: a tab selected, pinned or moved away meanwhile stays.
+            const still = new Set((await browser.tabs(windowId)).filter((t) => !t.active && !t.pinned).map((t) => t.id));
+            const closing = candidates.filter((t) => still.has(t.id));
+            if (closing.length === 0) return undefined;
+            const closed = new Set(await browser.closeTabs(closing.map((t) => t.id)));
+            const gone = closing.filter((t) => closed.has(t.id));
+            if (gone.length === 0) return void say("Couldn't close the tabs", false);
+            undoRecord = { kind: "tabs", tabs: gone.map(({ url, index }) => ({ url, index })) };
+            say(`Closed ${gone.length} tab${gone.length === 1 ? "" : "s"}`, true);
+            return undefined;
           });
         case "undo":
           return void (await serial(undo));

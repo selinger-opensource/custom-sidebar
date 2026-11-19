@@ -49,6 +49,7 @@ const tab = (id: number, over: Partial<TabInfo> = {}): TabInfo => ({
   url: `https://example.test/t${id}`,
   active: false,
   audible: false,
+  pinned: false,
   ...over,
 });
 
@@ -196,7 +197,7 @@ describe("rowCommand and keyResult", () => {
   });
 
   test("locked rows, tabs and headings ignore the editing keys", () => {
-    const withOther = sidebarRows(tree({ bar: BAR, other: [link("20", "Recipes")] }), [tab(1)], NO_FOLDING);
+    const withOther = sidebarRows(tree({ bar: BAR, other: [link("20", "Recipes")] }), [tab(1, { active: true })], NO_FOLDING);
     expect(keyResult(withOther, "b:2", "F2")).toEqual({});
     expect(keyResult(withOther, "b:2", "Delete")).toEqual({});
     expect(keyResult(withOther, "b:2", "ArrowUp", { alt: true })).toEqual({});
@@ -383,6 +384,15 @@ class FakeBrowser implements SidebarBrowser {
   }
   async newTab(windowId: number) {
     this.calls.push(`new ${windowId}`);
+  }
+  async closeTabs(ids: number[]) {
+    this.calls.push(`close ${ids.join(",")}`);
+    for (const [w, list] of this.tabsByWindow) this.tabsByWindow.set(w, list.filter((t) => !ids.includes(t.id)));
+    return ids;
+  }
+  async reopenTabs(windowId: number, tabs: { url: string; index: number }[]): Promise<{ url: string; index: number }[]> {
+    this.calls.push(`reopen ${windowId} ${tabs.map((t) => `${t.index}:${t.url}`).join(" ")}`);
+    return [];
   }
   // Bookmark writes, with chrome.bookmarks' rules: `index` is a slot in the folder as it is now,
   // and a move within one folder to a later slot lands one earlier (its old slot is gone).
@@ -955,5 +965,78 @@ describe("folder colours", () => {
     await sidebar.run({ type: "undo" });
     await settle();
     expect(b.icons).toEqual({});
+  });
+});
+
+describe("Tidy", () => {
+  const four = () => [tab(1, { pinned: true }), tab(2), tab(3, { active: true }), tab(4)];
+
+  test("the Tabs heading says how many tabs Tidy would close (not the selected one, not pinned ones)", () => {
+    expect(sidebarRows(tree(), four(), NO_FOLDING).find((r) => r.key === "s:tabs")).toMatchObject({ tidy: 2 });
+    expect(sidebarRows(tree(), [tab(1, { active: true })], NO_FOLDING).find((r) => r.key === "s:tabs")).toMatchObject({ tidy: 0 });
+  });
+
+  test("Tidy closes the others in one go; Undo reopens them in their places", async () => {
+    const b = new FakeBrowser();
+    b.tabsByWindow.set(1, four());
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "closeOtherTabs" });
+    expect(b.calls).toEqual(["close 2,4"]);
+    expect(sidebar.notice()).toMatchObject({ text: "Closed 2 tabs", undo: true });
+    await sidebar.run({ type: "undo" });
+    expect(b.calls.at(-1)).toBe("reopen 1 1:https://example.test/t2 3:https://example.test/t4");
+  });
+
+  test("Delete on the Tabs heading never tidies (one stray key would close the window's tabs)", () => {
+    const rows = sidebarRows(tree(), four(), NO_FOLDING);
+    expect(keyResult(rows, "s:tabs", "Delete")).toEqual({});
+    expect(keyResult(rows, "s:tabs", "Backspace")).toEqual({});
+  });
+
+  test("Tidy rechecks just before closing: a tab selected, pinned or moved away meanwhile stays", async () => {
+    const b = new FakeBrowser();
+    b.tabsByWindow.set(1, four());
+    const sidebar = await openSidebar(b, () => {});
+    let reads = 0;
+    const read = b.tabs.bind(b);
+    b.tabs = async (w: number) => {
+      const list = await read(w);
+      if (++reads === 2) return list.filter((t) => t.id !== 4); // tab 4 moved to another window meanwhile
+      return list;
+    };
+    await sidebar.run({ type: "closeOtherTabs" });
+    expect(b.calls).toEqual(["close 2"]);
+    expect(sidebar.notice()).toMatchObject({ text: "Closed 1 tab" });
+  });
+
+  test("Undo reports tabs it couldn't reopen and still reopens the rest", async () => {
+    const b = new FakeBrowser();
+    b.tabsByWindow.set(1, four());
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "closeOtherTabs" });
+    b.reopenTabs = async (_w, tabs) => tabs.slice(0, 1).map((t) => t); // the first one fails
+    await sidebar.run({ type: "undo" });
+    expect(sidebar.notice()).toMatchObject({ text: "Couldn't reopen 1 tab", undo: false });
+  });
+
+  test("with nothing to close, Tidy does nothing", async () => {
+    const b = new FakeBrowser();
+    b.tabsByWindow.set(1, [tab(1, { pinned: true }), tab(3, { active: true })]);
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "closeOtherTabs" });
+    expect(b.calls).toEqual([]);
+    expect(sidebar.notice()).toBeUndefined();
+  });
+
+  test("Undo after Tidy reverses Tidy, not the bookmark edit before it", async () => {
+    const b = new FakeBrowser();
+    b.tabsByWindow.set(1, four());
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Post" });
+    await settle();
+    await sidebar.run({ type: "closeOtherTabs" });
+    await sidebar.run({ type: "undo" });
+    expect(locate(b.bookmarks, "10")!.node.title).toBe("Post");
+    expect(b.calls.at(-1)).toMatch(/^reopen 1 /);
   });
 });
