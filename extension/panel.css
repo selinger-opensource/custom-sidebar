@@ -1,0 +1,91 @@
+/* Sidebar panel: one Flow list, Bookmarks above and this window's Tabs below.
+   Two colour treatments, each in light and dark following the system. Static palettes: Chrome
+   gives extensions no access to the user's theme colours. */
+
+/* ---- Tokens ------------------------------------------------------------------------------ */
+:root {
+  /* Neutral, light: close to Chrome's own side panels. */
+  --bg: #ffffff; --text: #1f1f1f; --muted: #5e5e5e; --icon: #474747;
+  --hover: rgb(31 31 31 / 0.06); --pressed: rgb(31 31 31 / 0.10);
+  --selected: #d3e3fd; --on-selected: #041e49; --focus: #0b57d0;
+  --divider: #e3e3e3; --scroll: rgb(0 0 0 / 0.22);
+}
+:root[data-treatment="warm"] {
+  --bg: #fffbf3; --text: #1e1b13; --muted: #625b4a; --icon: #4d4639;
+  --hover: rgb(110 90 20 / 0.08); --pressed: rgb(110 90 20 / 0.13);
+  --selected: #f6e3a1; --on-selected: #221b00; --focus: #6d5e0f;
+  --divider: #ece3cf; --scroll: rgb(60 50 20 / 0.25);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f1f1f; --text: #e3e3e3; --muted: #a8abaf; --icon: #c4c7c5;
+    --hover: rgb(255 255 255 / 0.07); --pressed: rgb(255 255 255 / 0.11);
+    --selected: #004a77; --on-selected: #c2e7ff; --focus: #a8c7fa;
+    --divider: #363636; --scroll: rgb(255 255 255 / 0.25);
+  }
+  :root[data-treatment="warm"] {
+    --bg: #1d1b16; --text: #e9e2d2; --muted: #b3ab97; --icon: #cfc6b2;
+    --hover: rgb(255 235 180 / 0.07); --pressed: rgb(255 235 180 / 0.11);
+    --selected: #57440f; --on-selected: #ffe08f; --focus: #dcc66e;
+    --divider: #38342a; --scroll: rgb(255 240 200 / 0.25);
+  }
+}
+
+/* ---- Base -------------------------------------------------------------------------------- */
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 13px/1.25 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased; overflow: hidden; user-select: none;
+}
+#app { height: 100%; overflow-y: auto; overflow-x: hidden; padding-bottom: 8px; scrollbar-width: thin; scrollbar-color: var(--scroll) transparent; }
+svg { flex: none; }
+
+/* ---- Section heads (focusable rows that fold their section) ------------------------------ */
+.section-head {
+  display: flex; align-items: center; gap: 4px; height: 26px; margin: 0 4px; padding: 0 8px;
+  color: var(--muted); font-size: 11px; font-weight: 500; letter-spacing: 0.01em;
+  background: var(--bg); border-radius: 6px; outline: none; cursor: default;
+}
+.section-head:hover { color: var(--text); }
+.section-head:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
+.section-head .grow { flex: 1; }
+.section-head .count { font-variant-numeric: tabular-nums; }
+.section-head.sticky { position: sticky; top: 0; z-index: 1; }
+.rule { border-top: 1px solid var(--divider); margin: 6px 12px 0; }
+.chev { width: 12px; color: var(--muted); }
+[aria-expanded="true"] > .chev { transform: rotate(90deg); }
+
+/* ---- Rows (bookmarks and tabs share one rhythm) ----------------------------------------- */
+.row {
+  position: relative; display: flex; align-items: center; gap: 8px;
+  height: 28px; margin: 0 4px; padding: 0 6px 0 calc(8px + var(--depth, 0) * 14px);
+  border-radius: 6px; cursor: default; outline: none; color: var(--text);
+}
+.row:hover { background: var(--hover); }
+.row:active { background: var(--pressed); }
+.row:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
+.row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .ico { width: 16px; height: 16px; display: grid; place-items: center; color: var(--icon); flex: none; }
+.row img.ico { border-radius: 2px; }
+.row .chev { margin-right: -4px; }
+.row .leaf-pad { width: 12px; margin-right: -4px; flex: none; }
+.row .folder-count { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.tab[aria-selected="true"] { background: var(--selected); color: var(--on-selected); }
+.tab[aria-selected="true"] .ico, .tab[aria-selected="true"] .state { color: var(--on-selected); }
+.tab .state { color: var(--muted); display: grid; place-items: center; }
+.icon-btn {
+  all: unset; width: 20px; height: 20px; border-radius: 4px; display: grid; place-items: center;
+  color: var(--icon); flex: none;
+}
+.icon-btn:hover { background: var(--pressed); }
+.tab .close { visibility: hidden; }
+.tab:hover .close, .tab:focus-visible .close, .tab[aria-selected="true"] .close { visibility: visible; }
+.new-tab, .new-tab .ico { color: var(--muted); }
+.empty { color: var(--muted); padding: 4px 16px 8px; font-size: 12px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .chev { transition: transform 120ms; }
+}

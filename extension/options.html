@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<title>Options</title>
+<style>
+  body { font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px 24px; max-width: 34em; }
+  fieldset { border: 0; padding: 0; margin: 0 0 20px; }
+  legend { font-weight: 600; margin-bottom: 6px; padding: 0; }
+  label { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; }
+  .hint { color: GrayText; font-size: 13px; margin: 2px 0 0 26px; }
+  button.link { all: unset; color: LinkText; text-decoration: underline; cursor: pointer; }
+</style>
+<body>
+<fieldset>
+  <legend>Sidebar colours</legend>
+  <label><input type="radio" name="colourTreatment" value="neutral"> Neutral, like Chrome</label>
+  <label><input type="radio" name="colourTreatment" value="warm"> Warm</label>
+  <p class="hint">Both follow your system's light or dark setting.</p>
+</fieldset>
+<fieldset>
+  <legend>Nightly sweep</legend>
+  <label><input type="checkbox" id="sweep"> Close tabs not used in the last 3 hours, once a day at 03:00 or the first time Chrome runs after it</label>
+  <p class="hint">Off by default. The selected tab of the focused window and tabs playing audio stay open, windows are never closed, and bookmarks are never changed. The first sweep after switching on is the next 03:00.</p>
+</fieldset>
+<fieldset>
+  <legend>Keyboard shortcut</legend>
+  <p class="hint" style="margin-left:0">The shortcut opens and closes the Sidebar. Change it at <button class="link" id="shortcuts">chrome://extensions/shortcuts</button>.</p>
+</fieldset>
+<script type="module" src="options.js"></script>
+</body>
+</html>

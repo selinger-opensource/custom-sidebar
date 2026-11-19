@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Other Side Panel (PROBE)",
+  "description": "Feasibility probe only: a second extension side panel, standing in for e.g. Claude's.",
+  "version": "0.0.1",
+  "permissions": [
+    "sidePanel"
+  ],
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "options_page": "open.html",
+  "background": {
+    "service_worker": "background.js"
+  }
+}
