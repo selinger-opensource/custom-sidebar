@@ -3,6 +3,8 @@ import {
   NO_FOLDING,
   addPlace,
   dropPlace,
+  iconText,
+  siteIconUrls,
   keyResult,
   openSidebar,
   rowCommand,
@@ -341,6 +343,31 @@ class FakeBrowser implements SidebarBrowser {
   async saveFolding(f: Folding) {
     this.stored = f;
   }
+  icons: Record<string, string> | undefined;
+  /** Makes the next icon write fail (storage refusing); `failIconWriteNumber` picks a later one. */
+  failIconWrite = false;
+  failIconWriteNumber = 0;
+  private iconWrites = 0;
+  failUpdate = false;
+  failIconRead = false;
+  async loadIcons() {
+    if (this.failIconRead) throw new Error("storage unavailable");
+    return this.icons && { ...this.icons };
+  }
+  async saveIcons(changes: Record<string, string | null>) {
+    this.iconWrites++;
+    if (this.failIconWrite || this.iconWrites === this.failIconWriteNumber) {
+      this.failIconWrite = false;
+      throw new Error("QUOTA_BYTES quota exceeded");
+    }
+    const next = { ...this.icons };
+    for (const [id, icon] of Object.entries(changes)) {
+      if (icon === null) delete next[id];
+      else next[id] = icon;
+    }
+    this.icons = next;
+    this.listener?.({ kind: "icons", changes });
+  }
   subscribe(listener: (e: SidebarEvent) => void) {
     this.listener = listener;
   }
@@ -379,6 +406,10 @@ class FakeBrowser implements SidebarBrowser {
   }
   async updateBookmark(id: string, changes: { title?: string; url?: string }) {
     await this.slow();
+    if (this.failUpdate) {
+      this.failUpdate = false;
+      throw new Error("Can't update");
+    }
     Object.assign(this.found(id).node, changes);
     this.calls.push(`update ${id}`);
     this.changed();
@@ -723,5 +754,184 @@ describe("Bookmark edits", () => {
     at.siblings.splice(at.index, 1);
     await sidebar.run({ type: "undo" });
     expect(sidebar.notice()).toMatchObject({ text: "Couldn't undo: it changed elsewhere", undo: false });
+  });
+});
+
+// --- Bookmark icons and site icons. ---------------------------------------------------------------
+describe("iconText and siteIconUrls", () => {
+  test("an icon is the first character typed, emoji sequences intact", () => {
+    expect(iconText("🍳")).toBe("🍳");
+    expect(iconText("  👩‍💻 code")).toBe("👩‍💻");
+    expect(iconText("🇩🇪")).toBe("🇩🇪");
+    expect(iconText("AB")).toBe("A");
+    expect(iconText("   ")).toBeUndefined();
+    expect(iconText("")).toBeUndefined();
+  });
+  test("site icons come from the bookmark's own site; nothing for non-web pages", () => {
+    expect(siteIconUrls("https://www.example.com/a/b?x=1#y")).toEqual([
+      "https://www.example.com/favicon.ico",
+      "https://www.example.com/apple-touch-icon.png",
+    ]);
+    expect(siteIconUrls("http://localhost:8080/x")).toEqual(["http://localhost:8080/favicon.ico", "http://localhost:8080/apple-touch-icon.png"]);
+    expect(siteIconUrls("chrome://settings")).toEqual([]);
+    expect(siteIconUrls("file:///tmp/x.html")).toEqual([]);
+    expect(siteIconUrls("not a url")).toEqual([]);
+  });
+});
+
+describe("Bookmark icons", () => {
+  test("rows carry the icon chosen for them", () => {
+    const rows = sidebarRows(tree({ bar: BAR }), [], folding({ expanded: ["11"] }), { "10": "📬", "11": "⭐" });
+    expect(rows.find((r) => r.key === "b:10")).toMatchObject({ icon: "📬" });
+    expect(rows.find((r) => r.key === "b:11")).toMatchObject({ icon: "⭐" });
+    expect(rows.find((r) => r.key === "b:12")).not.toHaveProperty("icon");
+  });
+
+  test("an edit can set an icon alone, or with the title; Undo takes it back", async () => {
+    const b = new FakeBrowser();
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Mail", icon: "📬" });
+    await settle();
+    expect(b.icons).toEqual({ "10": "📬" });
+    expect(sidebar.rows().find((r) => r.key === "b:10")).toMatchObject({ icon: "📬" });
+    expect(sidebar.notice()).toMatchObject({ undo: true });
+    await sidebar.run({ type: "editBookmark", id: "11", title: "Daily", icon: "⭐" });
+    await settle();
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(b.icons).toEqual({ "10": "📬" });
+    expect(locate(b.bookmarks, "11")!.node.title).toBe("Everyday");
+  });
+
+  test("null removes an icon; Undo puts it back", async () => {
+    const b = new FakeBrowser();
+    b.icons = { "10": "📬" };
+    const sidebar = await openSidebar(b, () => {});
+    expect(sidebar.rows().find((r) => r.key === "b:10")).toMatchObject({ icon: "📬" });
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Mail", icon: null });
+    await settle();
+    expect(b.icons).toEqual({});
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(b.icons).toEqual({ "10": "📬" });
+  });
+
+  test("icons chosen in another window's Sidebar show up", async () => {
+    const b = new FakeBrowser();
+    const sidebar = await openSidebar(b, () => {});
+    b.emit({ kind: "icons", changes: { "15": "🗂️" } });
+    await settle();
+    expect(sidebar.rows().find((r) => r.key === "b:15")).toMatchObject({ icon: "🗂️" });
+  });
+
+  test("Undo of a delete brings the icons back on the recreated bookmarks", async () => {
+    const b = new FakeBrowser();
+    b.icons = { "11": "⭐", "12": "💬" };
+    b.stored = folding({ expanded: ["11"] });
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "removeBookmark", id: "11" });
+    await settle();
+    await sidebar.run({ type: "undo" });
+    await settle();
+    const everyday = locate(b.bookmarks, "1")!.node.children![1]!;
+    expect(b.icons![everyday.id]).toBe("⭐");
+    expect(b.icons![everyday.children![0]!.id]).toBe("💬");
+    expect(Object.keys(b.icons!)).toHaveLength(2); // the deleted IDs' icons are gone
+  });
+
+  test("deleting clears the deleted bookmarks' icons", async () => {
+    const b = new FakeBrowser();
+    b.icons = { "11": "⭐", "12": "💬", "10": "📬" };
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "removeBookmark", id: "11" });
+    await settle();
+    expect(b.icons).toEqual({ "10": "📬" });
+  });
+
+  test("two windows' Sidebars setting different icons at once both keep theirs", async () => {
+    const b = new FakeBrowser();
+    const one = await openSidebar(b, () => {});
+    const two = await openSidebar(b, () => {});
+    await Promise.all([
+      one.run({ type: "editBookmark", id: "10", title: "Mail", icon: "📬" }),
+      two.run({ type: "editBookmark", id: "15", title: "Empty", icon: "🗂️" }),
+    ]);
+    await settle();
+    expect(b.icons).toEqual({ "10": "📬", "15": "🗂️" });
+  });
+
+  test("if the icon can't be saved, the title isn't changed either, and the panel says so", async () => {
+    const b = new FakeBrowser();
+    const sidebar = await openSidebar(b, () => {});
+    b.failIconWrite = true;
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Post", icon: "📬" });
+    await settle();
+    expect(locate(b.bookmarks, "10")!.node.title).toBe("Mail");
+    expect(b.icons ?? {}).toEqual({});
+    expect(sidebar.rows().find((r) => r.key === "b:10")).not.toHaveProperty("icon");
+    expect(sidebar.notice()).toMatchObject({ undo: false });
+  });
+
+  test("if the title can't be saved, the icon is put back", async () => {
+    const b = new FakeBrowser();
+    const sidebar = await openSidebar(b, () => {});
+    b.failUpdate = true; // after the icon is written
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Post", icon: "📬" });
+    await settle();
+    expect(b.icons ?? {}).toEqual({});
+    expect(locate(b.bookmarks, "10")!.node.title).toBe("Mail");
+  });
+
+  test("if the title fails and putting the icon back fails too, the panel says so and Undo removes the icon", async () => {
+    const b = new FakeBrowser();
+    const sidebar = await openSidebar(b, () => {});
+    b.failUpdate = true;
+    b.failIconWriteNumber = 2; // the rollback
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Post", icon: "📬" });
+    await settle();
+    expect(b.icons).toEqual({ "10": "📬" });
+    expect(sidebar.notice()).toMatchObject({ text: "Couldn't save the name or URL; the icon changed", undo: true });
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(b.icons).toEqual({});
+  });
+
+  test("a delete whose icon cleanup fails still offers Undo", async () => {
+    const b = new FakeBrowser();
+    b.icons = { "11": "⭐" };
+    const sidebar = await openSidebar(b, () => {});
+    b.failIconWrite = true; // the cleanup after the delete
+    await sidebar.run({ type: "removeBookmark", id: "11" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Mail", "Empty"]);
+    expect(sidebar.notice()).toMatchObject({ text: "Deleted ‘Everyday’", undo: true });
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Mail", "Everyday", "Empty"]);
+  });
+
+  test("an icon removed elsewhere while the panel starts stays removed", async () => {
+    const b = new FakeBrowser();
+    b.icons = { "10": "📬" };
+    let release!: () => void;
+    const slowLoad = b.loadIcons.bind(b);
+    b.loadIcons = () => new Promise((r) => (release = () => void slowLoad().then(r)));
+    const opening = openSidebar(b, () => {});
+    await settle();
+    b.emit({ kind: "icons", changes: { "10": null } });
+    release();
+    const sidebar = await opening;
+    expect(sidebar.rows().find((r) => r.key === "b:10")).not.toHaveProperty("icon");
+  });
+
+  test("Undo of an icon changed again elsewhere leaves it and says so", async () => {
+    const b = new FakeBrowser();
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Mail", icon: "📬" });
+    await settle();
+    b.icons = { "10": "✉️" };
+    await sidebar.run({ type: "undo" });
+    expect(b.icons).toEqual({ "10": "✉️" });
+    expect(sidebar.notice()).toMatchObject({ text: "Couldn't undo: it changed elsewhere" });
   });
 });

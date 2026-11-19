@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { colourTreatment, sweepEnabled, sweepSwitch, sweepSwitchedOn } from "../extension/src/settings";
+import { colourTreatment, siteIcons, sweepEnabled, sweepSwitch, sweepSwitchedOn } from "../extension/src/settings";
 
 describe("settings", () => {
   test("a fresh install (nothing stored) has the sweep off and the Neutral treatment", () => {
@@ -20,5 +20,10 @@ describe("settings", () => {
   test("the options switch writes the new baseline in the same write as switching on", () => {
     expect(sweepSwitch(true, 1_000)).toEqual({ enabled: true, lastSweepAt: 1_000 });
     expect(sweepSwitch(false, 1_000)).toEqual({ enabled: false });
+  });
+  test("site icons are on unless switched off", () => {
+    expect(siteIcons(undefined)).toBe(true);
+    expect(siteIcons(true)).toBe(true);
+    expect(siteIcons(false)).toBe(false);
   });
 });

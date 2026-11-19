@@ -1,7 +1,7 @@
 // Side panel page: renders the Sidebar's rows and turns clicks and keys into its commands.
 // Rendering only — what rows exist and what a key does live in sidebar.ts.
-import { COLOUR_TREATMENT_KEY, colourTreatment } from "./settings";
-import { addPlace, dropPlace, keyResult, openSidebar, rowCommand, type DragSource, type DropZone, type KeyResult, type Place, type Row, type Sidebar } from "./sidebar";
+import { COLOUR_TREATMENT_KEY, SITE_ICONS_KEY, colourTreatment, siteIcons } from "./settings";
+import { addPlace, dropPlace, iconText, keyResult, siteIconUrls, openSidebar, rowCommand, type DragSource, type DropZone, type KeyResult, type Place, type Row, type Sidebar } from "./sidebar";
 import { chromeSidebar } from "./sidebar-chrome";
 
 const app = document.getElementById("app")!;
@@ -26,16 +26,38 @@ const host = (url: string) => {
     return "";
   }
 };
-/** Chrome's favicon cache by page URL; a never-visited page shows Chrome's default globe. Our own
- *  pages (options, the panel) aren't in that cache, so they show the extension's icon. */
+/** Site icons (GLOSSARY.md): Chrome's favicon cache by page URL. A page Chrome hasn't stored an
+ *  icon for gets Chrome's default globe; then, if the setting allows, the icon is fetched from
+ *  the page's own site (siteFallback below). Our own pages show the extension's icon. */
 const OWN_PAGES = chrome.runtime.getURL("");
-const img = (src: string) => `<img class="ico" alt="" src="${esc(src)}">`;
-const favicon = (url: string) =>
-  url.startsWith(OWN_PAGES)
-    ? img(chrome.runtime.getURL("icons/icon-32.png"))
-    : /^https?:/.test(url)
-      ? img(chrome.runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(url)}&size=32`))
-      : `<span class="ico">${ICON.globe}</span>`;
+const cached = (url: string) => chrome.runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(url)}&size=32`);
+const img = (src: string, page = "") => `<img class="ico" alt="" src="${esc(src)}"${page && ` data-page="${esc(page)}"`}>`;
+const originOf = (url: string) => {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+};
+/** By site (origin): the icon URL found on the site, or null when it has none. */
+const siteFound = new Map<string, string | null>();
+/** Pages whose cached icon is Chrome's default (`true`) or a real one (`false`), once checked.
+ *  Only the former take the site's icon: a page Chrome knows keeps its own (Docs and Sheets
+ *  share a site but not an icon). */
+const pageDefault = new Map<string, boolean>();
+let siteIconsOn = true;
+/** `fromSite`: may this row ask the page's site for its icon? Only bookmarks: a tab's site is
+ *  open already, and the panel never contacts a site you haven't bookmarked. */
+const favicon = (url: string, fromSite = false) => {
+  if (url.startsWith(OWN_PAGES)) return img(chrome.runtime.getURL("icons/icon-32.png"));
+  if (!/^https?:/.test(url)) return `<span class="ico">${ICON.globe}</span>`;
+  if (!siteIconsOn || !fromSite) return img(cached(url));
+  const isDefault = pageDefault.get(url);
+  const found = isDefault ? siteFound.get(originOf(url)) : undefined;
+  return found ? img(found) : img(cached(url), isDefault === undefined ? url : "");
+};
+
+const emoji = (icon: string) => `<span class="emoji" aria-hidden="true">${esc(icon)}</span>`;
 
 // --- Rows to HTML. ---------------------------------------------------------------------------
 function rowHtml(row: Row): string {
@@ -47,10 +69,10 @@ function rowHtml(row: Row): string {
         ${ICON.chev}<span>${row.label}</span><span class="grow"></span><span class="count">${row.count ?? ""}</span></div>`;
     case "folder":
       return `<div class="row folder" role="treeitem" aria-level="${row.depth + 1}" aria-expanded="${row.open}" style="--depth:${row.depth}" title="${esc(row.title)}" ${attrs}>
-        ${ICON.chev}<span class="ico">${ICON.folder}</span><span class="label">${esc(row.title)}</span><span class="folder-count">${row.count}</span></div>`;
+        ${ICON.chev}<span class="ico">${row.icon !== undefined ? emoji(row.icon) : ICON.folder}</span><span class="label">${esc(row.title)}</span><span class="folder-count">${row.count}</span></div>`;
     case "bookmark":
       return `<div class="row bookmark" role="treeitem" aria-level="${row.depth + 1}" style="--depth:${row.depth}" title="${esc(`${row.title}\n${host(row.url)}`)}" ${attrs}>
-        <span class="leaf-pad"></span>${favicon(row.url)}<span class="label">${esc(row.title)}</span></div>`;
+        <span class="leaf-pad"></span>${row.icon !== undefined ? `<span class="ico">${emoji(row.icon)}</span>` : favicon(row.url, true)}<span class="label">${esc(row.title)}</span></div>`;
     case "tab":
       return `<div class="row tab" role="option" aria-selected="${row.active}" title="${esc(`${row.title}\n${host(row.url)}`)}" ${attrs}>
         ${favicon(row.url)}<span class="label">${esc(row.title)}</span>${row.audible ? `<span class="state" title="Playing audio">${ICON.audio}</span>` : ""}
@@ -323,6 +345,47 @@ function openEditor(key: string): void {
   const url = row.kind === "bookmark" ? field("URL", row.url) : undefined;
   el.querySelector(".label")!.replaceWith(fields);
   el.querySelector(".folder-count")?.remove();
+
+  // The icon slot becomes a button that opens the icon picker. `chosen`: undefined = unchanged,
+  // null = back to the default (site or folder) icon.
+  let chosen: string | null | undefined;
+  const slot = el.querySelector<HTMLElement>(".ico")!;
+  const defaultIcon = row.kind === "folder" ? ICON.folder : favicon(row.url, true);
+  const iconButton = Object.assign(document.createElement("button"), { className: "icon-pick", type: "button" });
+  iconButton.setAttribute("aria-label", "Choose icon");
+  iconButton.setAttribute("aria-haspopup", "dialog");
+  iconButton.title = "Choose icon";
+  const showIcon = () => {
+    const icon = chosen === undefined ? row.icon : chosen ?? undefined;
+    iconButton.innerHTML = icon !== undefined ? emoji(icon) : defaultIcon;
+  };
+  showIcon();
+  slot.replaceWith(iconButton);
+  let picker: HTMLElement | undefined;
+  const inside = (node: Node | null) => !!node && (el.contains(node) || !!picker?.contains(node));
+  const closePicker = (focus: HTMLElement | undefined) => {
+    const box = picker;
+    picker = undefined;
+    focus?.focus(); // first, so focus never leaves the editor while the picker goes
+    box?.remove();
+  };
+  iconButton.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (picker) return closePicker(iconButton);
+    picker = iconPicker((icon) => {
+      chosen = icon;
+      showIcon();
+      closePicker(title);
+    }, () => closePicker(iconButton));
+    picker.addEventListener("focusout", (ev) => {
+      if (!inside(ev.relatedTarget as Node | null)) finish(true, true);
+    });
+    document.body.append(picker);
+    const at = iconButton.getBoundingClientRect();
+    picker.style.left = `${Math.max(4, Math.min(at.left, innerWidth - picker.offsetWidth - 4))}px`;
+    picker.style.top = `${at.bottom + picker.offsetHeight > innerHeight - 4 ? Math.max(4, at.top - picker.offsetHeight - 2) : at.bottom + 2}px`;
+    picker.querySelector<HTMLElement>("button")!.focus();
+  });
   title.focus();
   title.select();
 
@@ -337,22 +400,66 @@ function openEditor(key: string): void {
       }
       save = false;
     }
-    const changed = t !== (row.kind === "bookmark" ? row.savedTitle : row.title) || (u !== undefined && row.kind === "bookmark" && u !== row.url);
-    if (save && changed) void sidebar.run({ type: "editBookmark", id: row.id, title: t, ...(u !== undefined && { url: u }) }).catch(report);
+    closePicker(undefined);
+    const iconChanged = chosen !== undefined && chosen !== (row.icon ?? null);
+    const changed = iconChanged || t !== (row.kind === "bookmark" ? row.savedTitle : row.title) || (u !== undefined && row.kind === "bookmark" && u !== row.url);
+    if (save && changed) {
+      void sidebar.run({ type: "editBookmark", id: row.id, title: t, ...(u !== undefined && { url: u }), ...(iconChanged && { icon: chosen as string | null }) }).catch(report);
+    }
     deferred = true; // the row goes back to plain text now; Chrome's event brings the new values
     closeOverlay(leaving ? undefined : key);
   };
-  fields.addEventListener("keydown", (e) => {
+  el.addEventListener("keydown", (e) => {
+    if (overlay?.kind !== "editor" || overlay.key !== key) return;
     e.stopPropagation();
-    if (e.key === "Enter") finish(true, false);
+    if (e.key === "Enter" && e.target !== iconButton) finish(true, false);
     else if (e.key === "Escape") finish(false, false);
     else return;
     e.preventDefault();
   });
-  fields.addEventListener("focusout", (e) => {
-    if (!fields.contains(e.relatedTarget as Node | null)) finish(true, true);
+  el.addEventListener("focusout", (e) => {
+    if (overlay?.kind === "editor" && overlay.key === key && !inside(e.relatedTarget as Node | null)) finish(true, true);
   });
   for (const ev of ["click", "dblclick", "auxclick"]) fields.addEventListener(ev, (e) => e.stopPropagation());
+}
+
+/** Common Bookmark icons; every other emoji comes from the system picker in the field below. */
+const ICON_CHOICES = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment("⭐📌📁📚📖📝📅📬💬📞👥🏠🏢💼💰🧾📊📈🛒🎵🎬📷🎮🚗🍳☕🏃❤️🔧💡🔒🌐🔥✅🧪🤖🎓🧠📰🗺️")].map((g) => g.segment);
+const SYSTEM_PICKER = /Mac/.test(navigator.platform) ? "⌃⌘Space" : "Win+.";
+
+/** The editor's icon picker: a grid of common emoji, a field for any other (where the system's
+ *  emoji picker works), and Default icon. Escape closes it without a choice. */
+function iconPicker(choose: (icon: string | null) => void, cancel: () => void): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "icon-picker";
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-label", "Choose icon");
+  const grid = document.createElement("div");
+  grid.className = "icon-grid";
+  for (const icon of ICON_CHOICES) {
+    const b = Object.assign(document.createElement("button"), { type: "button", textContent: icon, title: icon });
+    b.addEventListener("click", () => choose(icon));
+    grid.append(b);
+  }
+  const other = Object.assign(document.createElement("input"), { placeholder: `Any emoji: ${SYSTEM_PICKER}`, spellcheck: false });
+  other.setAttribute("aria-label", "Any emoji");
+  other.addEventListener("input", () => {
+    const icon = iconText(other.value);
+    if (icon !== undefined) choose(icon);
+  });
+  const reset = Object.assign(document.createElement("button"), { type: "button", className: "text-btn", textContent: "Default icon" });
+  reset.addEventListener("click", () => choose(null));
+  const foot = document.createElement("div");
+  foot.className = "icon-foot";
+  foot.append(other, reset);
+  box.append(grid, foot);
+  box.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    cancel();
+  });
+  return box;
 }
 
 // --- Drag and drop: bookmarks and folders move, a tab dropped in Bookmarks is saved there. -------
@@ -477,17 +584,119 @@ noticeBox.addEventListener("click", (e) => {
 
 document.getElementById("options")!.addEventListener("click", () => void chrome.runtime.openOptionsPage().catch(report));
 
+// --- Site icons from the site itself, when Chrome's cache has none. ---------------------------
+/** Pixels of an image at 32 × 32, to tell Chrome's default icon from a real one. */
+function pixels(image: HTMLImageElement): string {
+  const canvas = Object.assign(document.createElement("canvas"), { width: 32, height: 32 });
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(image, 0, 0, 32, 32);
+  return ctx.getImageData(0, 0, 32, 32).data.join(",");
+}
+/** What Chrome's cache returns for a page it knows nothing about. */
+const defaultIcon = new Promise<string>((resolve) => {
+  const probe = new Image();
+  probe.onload = () => resolve(pixels(probe));
+  probe.onerror = () => resolve("");
+  probe.src = cached("https://never-visited.invalid/");
+});
+
+/** Whether an image URL loads (off screen; gives up after 8 s). */
+const imageLoads = (src: string) =>
+  new Promise<boolean>((resolve) => {
+    const probe = new Image();
+    const timer = setTimeout(() => resolve(false), 8000);
+    probe.onload = () => (clearTimeout(timer), resolve(probe.naturalWidth > 0));
+    probe.onerror = () => (clearTimeout(timer), resolve(false));
+    probe.src = src;
+  });
+
+/** Whether a site serves an icon at `src`. An image request follows redirects, as on a visit:
+ *  Chrome refuses every redirect-refusing request an extension can make without site permissions
+ *  (learnings 2026-11-19 · no-cors-redirect-modes). */
+const loads = imageLoads;
+
+/** Asks a site for its icon once per panel: its own icon files in turn, the first that loads. The
+ *  row keeps Chrome's default icon until one does, then the next render shows it. */
+const siteProbes = new Map<string, Promise<string | null | undefined>>();
+/** Bumped when site icons are switched off: probes under way stop before their next request. */
+let probeRound = 0;
+function probeSite(page: string): Promise<string | null | undefined> {
+  const origin = originOf(page);
+  let probe = siteProbes.get(origin);
+  if (!probe) {
+    const round = probeRound;
+    probe = (async () => {
+      for (const url of siteIconUrls(page)) {
+        if (round !== probeRound || !siteIconsOn) return undefined; // switched off meanwhile
+        if (await loads(url)) return url;
+      }
+      return null;
+    })();
+    siteProbes.set(origin, probe);
+    void probe.then((found) => {
+      if (found === undefined || round !== probeRound) return;
+      siteFound.set(origin, found);
+      if (found) scheduleRender();
+    });
+  }
+  return probe;
+}
+
+// A page visited since gets its own icon in Chrome's cache: check it again.
+chrome.tabs.onUpdated.addListener((_id, change, tab) => {
+  if (change.favIconUrl === undefined || tab.url === undefined || !pageDefault.get(tab.url)) return;
+  pageDefault.delete(tab.url);
+  scheduleRender();
+});
+
+app.addEventListener(
+  "load",
+  (e) => {
+    const image = e.target;
+    if (!(image instanceof HTMLImageElement) || !siteIconsOn) return;
+    const page = image.dataset.page;
+    if (page === undefined) return;
+    image.removeAttribute("data-page"); // checked once per page
+    void defaultIcon.then((fallback) => {
+      if (fallback === "" || !image.isConnected || pageDefault.has(page)) return;
+      const isDefault = pixels(image) === fallback;
+      pageDefault.set(page, isDefault);
+      if (!isDefault) return;
+      const found = siteFound.get(originOf(page));
+      if (found) scheduleRender(); // the site was asked already, for another page
+      else if (found === undefined) void probeSite(page);
+    });
+  },
+  true, // load doesn't bubble
+);
+
+const applySiteIcons = (stored: unknown) => {
+  const on = siteIcons(stored);
+  if (on === siteIconsOn) return;
+  siteIconsOn = on;
+  probeRound++;
+  siteProbes.clear();
+  siteFound.clear();
+  pageDefault.clear(); // switched back on, every page is checked again
+  scheduleRender();
+};
+
 // --- Colour treatment, live from the options page. ----------------------------------------------
 const applyTreatment = (stored: unknown) => {
   document.documentElement.dataset.treatment = colourTreatment(stored);
 };
 chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
   const change = changes[COLOUR_TREATMENT_KEY];
-  if (area === "local" && change) applyTreatment(change.newValue);
+  if (change) applyTreatment(change.newValue);
+  const icons = changes[SITE_ICONS_KEY];
+  if (icons) applySiteIcons(icons.newValue);
 });
 
 void (async () => {
-  applyTreatment((await chrome.storage.local.get(COLOUR_TREATMENT_KEY))[COLOUR_TREATMENT_KEY]);
+  const stored = await chrome.storage.local.get([COLOUR_TREATMENT_KEY, SITE_ICONS_KEY]);
+  applyTreatment(stored[COLOUR_TREATMENT_KEY]);
+  siteIconsOn = siteIcons(stored[SITE_ICONS_KEY]);
   sidebar = await openSidebar(chromeSidebar, scheduleRender);
   render();
 })();

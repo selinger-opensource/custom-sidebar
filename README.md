@@ -14,6 +14,7 @@ A Chrome extension that puts your **bookmarks above the tabs of the current wind
 
 - **Bookmarks** from Chrome's own bookmarks: the bookmarks bar inline, folders that expand, "Other bookmarks" as a folder. Clicking one opens it in this window (⌘/Ctrl-click or middle-click: in the background).
 - **Edit bookmarks in place:** drag to move bookmarks and folders, drag a tab in to save it, and right-click for Edit (title and URL), Delete, New folder and Add current tab. Keys: F2 edit, Delete delete, ⌥↑/⌥↓ move, ⌘/Ctrl+Z undo, Shift+F10 menu. The last edit can be undone from the footer.
+- **Icons:** give any bookmark or folder an emoji in the editor (a grid of common ones, or any emoji through your system's emoji picker). Bookmarks you've never visited get their site's icon (see Privacy).
 - **Tabs** of the window the panel sits in, in tab-strip order: click to switch, × or middle-click to close, and a New tab row. Each window has its own independent panel.
 - Both sections fold, and the panel remembers which folders are open.
 - Updates live from Chrome's events; nothing polls.
@@ -34,7 +35,7 @@ Recommended layout, for the smallest footprint: in Chrome's settings put the **s
 
 ### Options
 
-Right-click the icon → **Options**: colour treatment, and the nightly sweep's switch.
+Options (⚙ at the bottom of the panel): colour treatment, site icons, and the nightly sweep's switch.
 
 ### Keyboard
 
@@ -47,11 +48,11 @@ One tab stop for the whole list. ↑/↓, Home/End move; → opens a folder or s
 | `sidePanel` | The panel itself. |
 | `bookmarks` | Read your bookmarks, and change them when you edit them in the panel. Chrome warns "Read and change your bookmarks". |
 | `tabs` | Titles and URLs of the panel's window. Chrome warns "Read your browsing history". |
-| `favicon` | Site icons from Chrome's local favicon cache (a never-visited bookmark shows a globe). |
+| `favicon` | Site icons from Chrome's local favicon cache. |
 | `storage` | Settings, open folders, and the sweep's counts-only receipts, on your machine. |
 | `alarms`, `webNavigation` | The nightly sweep: a periodic "is it due?" check, and counting navigations as use. |
 
-No host permissions, no network requests, no analytics. See [SECURITY.md](SECURITY.md).
+No host permissions and no analytics. The only network requests are site icons for bookmarks you've never visited, fetched from those bookmarks' own sites (switch off in Options). See [SECURITY.md](SECURITY.md).
 
 ## Known limits
 

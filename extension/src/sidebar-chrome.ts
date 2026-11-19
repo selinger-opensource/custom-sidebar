@@ -1,9 +1,11 @@
 // Chrome adapter for the Sidebar's SidebarBrowser seam. Reads bookmarks and writes them only for a
 // Bookmark edit, reads the tabs of one window, and turns every bookmark, tab and Folding change
 // into a SidebarEvent, leaving the filtering to the session in sidebar.ts.
-import { NO_FOLDING, type BookmarkNode, type Folding, type SidebarBrowser, type TabInfo } from "./sidebar";
+import { NO_FOLDING, type BookmarkIcons, type BookmarkNode, type Folding, type IconChanges, type SidebarBrowser, type TabInfo } from "./sidebar";
 
 export const FOLDING_KEY = "sidebarFolding";
+/** One storage key per Bookmark icon: `icon:<bookmark id>`. */
+export const ICON_KEY_PREFIX = "icon:";
 
 const toTabInfo = (t: chrome.tabs.Tab): TabInfo[] =>
   t.id === undefined || t.id === chrome.tabs.TAB_ID_NONE
@@ -34,6 +36,21 @@ export const chromeSidebar: SidebarBrowser = {
     await chrome.storage.local.set({ [FOLDING_KEY]: folding });
   },
 
+  async loadIcons() {
+    const icons: BookmarkIcons = {};
+    for (const [key, value] of Object.entries(await chrome.storage.local.get(null))) {
+      if (key.startsWith(ICON_KEY_PREFIX) && typeof value === "string") icons[key.slice(ICON_KEY_PREFIX.length)] = value;
+    }
+    return icons;
+  },
+
+  async saveIcons(changes) {
+    const set = Object.fromEntries(Object.entries(changes).flatMap(([id, icon]) => (icon === null ? [] : [[ICON_KEY_PREFIX + id, icon]])));
+    const removed = Object.entries(changes).flatMap(([id, icon]) => (icon === null ? [ICON_KEY_PREFIX + id] : []));
+    if (Object.keys(set).length > 0) await chrome.storage.local.set(set);
+    if (removed.length > 0) await chrome.storage.local.remove(removed);
+  },
+
   subscribe(listener) {
     const bookmarks = () => listener({ kind: "bookmarks" });
     chrome.bookmarks.onCreated.addListener(bookmarks);
@@ -55,8 +72,14 @@ export const chromeSidebar: SidebarBrowser = {
     chrome.tabs.onReplaced.addListener(() => tabs());
 
     chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "local") return;
       const change = changes[FOLDING_KEY];
-      if (area === "local" && change) listener({ kind: "folding", folding: (change.newValue as Folding | undefined) ?? NO_FOLDING });
+      if (change) listener({ kind: "folding", folding: (change.newValue as Folding | undefined) ?? NO_FOLDING });
+      const icons: IconChanges = {};
+      for (const [key, { newValue }] of Object.entries(changes)) {
+        if (key.startsWith(ICON_KEY_PREFIX)) icons[key.slice(ICON_KEY_PREFIX.length)] = typeof newValue === "string" ? newValue : null;
+      }
+      if (Object.keys(icons).length > 0) listener({ kind: "icons", changes: icons });
     });
   },
 

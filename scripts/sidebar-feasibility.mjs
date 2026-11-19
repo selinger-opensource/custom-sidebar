@@ -31,9 +31,18 @@ const titles = new Map();
 const collect = (nodes) => nodes.forEach((n) => (n.children ? collect(n.children) : titles.set(n.path, n.title)));
 collect(S.bar); collect(S.other); collect(S.windows.human); collect(S.windows.ai);
 const COLORS = ["#1a73e8", "#188038", "#d93025", "#e37400", "#9334e6", "#007b83", "#b06000", "#c5221f"];
+const siteIconRequests = [];
+const redirectedRequests = []; // icon requests that reached this site through another site's redirect
 const server = createServer((req, res) => {
   const path = new URL(req.url, "http://x").pathname;
   const seg = path.split("/")[1] || "x";
+  if (path === "/favicon.ico") {
+    // The site-wide icon a site icon fetch finds (the Sidebar asks for it when Chrome has none).
+    siteIconRequests.push(req.headers.host);
+    if (req.url.includes("via=redirect")) redirectedRequests.push(req.url);
+    res.setHeader("content-type", "image/svg+xml");
+    return res.end(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="8" fill="#7b3fe4"/></svg>`);
+  }
   if (path.startsWith("/favicon/")) {
     const s = path.split("/")[2].replace(".svg", "");
     const c = COLORS[[...s].reduce((a, ch) => a + ch.charCodeAt(0), 0) % COLORS.length];
@@ -52,6 +61,21 @@ const server = createServer((req, res) => {
     <script>const f=()=>vw.textContent="page viewport "+innerWidth+" × "+innerHeight;f();addEventListener("resize",f)</script>${audio}</body>`);
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
+// A second site that answers icon requests slowly and has none, to switch site icons off while
+// a request is under way: its request log shows whether another request followed.
+const slowSiteRequests = [];
+const slowSite = createServer((req, res) => {
+  slowSiteRequests.push(new URL(req.url, "http://x").pathname);
+  setTimeout(() => { res.statusCode = 404; res.end(); }, 1500);
+});
+await new Promise((r) => slowSite.listen(0, "127.0.0.1", r));
+// A site that forwards its icon requests to another site (the main one): the Sidebar must not follow.
+const redirectSite = createServer((req, res) => {
+  res.statusCode = 302;
+  res.setHeader("location", `${ORIGIN}/favicon.ico?via=redirect`);
+  res.end();
+});
+await new Promise((r) => redirectSite.listen(0, "127.0.0.1", r));
 const ORIGIN = `http://127.0.0.1:${server.address().port}`;
 
 // --- Profile files: native bookmarks (source of truth) and shell prefs. -----------------------
@@ -722,6 +746,88 @@ async function bookmarkEditSteps(cdp, win, tabsIn, e, found, runDir) {
   e.tabDropSavesBookmark = !!(await until(async () => (await bm(`chrome.bookmarks.getChildren("${lab.folder}").then((c) => c.at(-1)?.url)`)) === ORIGIN + firstTab.url)); // tabsIn strips ORIGIN
   e.tabStaysOpen = (await tabsIn(win.human)).some((t) => t.id === firstTab.id);
 
+  // 7. Bookmark icons: pick one from the grid, Undo; type any emoji. Site icons: a never-visited
+  //    site gets its own /favicon.ico; a site with none keeps the globe; switched off, no requests.
+  e.step = "7. Icons";
+  const iconsStored = () => bm(`chrome.storage.local.get(null).then((s) => Object.fromEntries(Object.entries(s).filter(([k]) => k.startsWith("icon:")).map(([k, v]) => [k.slice(5), v])))`);
+  await focusRow(beta);
+  await key("F2", "F2", 113);
+  await editorOpen(2);
+  await clickSelector(cdp, panel, ".row.editing .icon-pick");
+  e.iconPickerOpens = !!(await until(() => evalIn(cdp, panel, `document.querySelectorAll(".icon-picker .icon-grid button").length === 40`)));
+  await shot(cdp, panel, join(runDir, "icon-picker.png"));
+  await evalIn(cdp, panel, `[...document.querySelectorAll(".icon-grid button")].find((b) => b.textContent === "📚").setAttribute("data-harness-item", "")`);
+  await clickSelector(cdp, panel, "[data-harness-item]");
+  e.pickedIconShowsInEditor = await evalIn(cdp, panel, `document.querySelector(".row.editing .icon-pick")?.textContent === "📚" && !document.querySelector(".icon-picker")`);
+  await key("Enter", "Enter", 13);
+  e.pickedIconSaved = !!(await until(async () => (await iconsStored())[beta] === "📚"));
+  e.iconShowsOnRow = !!(await until(() => evalIn(cdp, panel, `document.querySelector('[data-key="b:${beta}"] .emoji')?.textContent === "📚"`)));
+  await focusRow(beta);
+  await key("z", "KeyZ", 90, MOD);
+  e.undoRemovesIcon = !!(await until(async () => (await iconsStored())[beta] === undefined));
+  await focusRow(gamma);
+  await key("F2", "F2", 113);
+  await editorOpen(2);
+  await clickSelector(cdp, panel, ".row.editing .icon-pick");
+  await until(() => evalIn(cdp, panel, `!!document.querySelector(".icon-foot input")`));
+  await evalIn(cdp, panel, `document.querySelector(".icon-foot input").focus()`);
+  await cdp.send("Input.insertText", { text: "🍳" }, panel); // what the system emoji picker does
+  await key("Enter", "Enter", 13);
+  e.typedEmojiSaved = !!(await until(async () => (await iconsStored())[gamma] === "🍳"));
+
+  const port = new URL(ORIGIN).port;
+  // Evidence for the no-cors redirect rule (learnings · no-cors-redirect-modes).
+  e.fetchProbe = await evalIn(cdp, panel, `Promise.all(["error", "follow", "manual"].map((redirect) =>
+    fetch("http://localhost:${port}/favicon.ico", { mode: "no-cors", redirect, credentials: "omit" }).then((r) => redirect + ": " + r.type + " " + r.status, (x) => redirect + ": ERR " + x.message)))`);
+  const fresh = `http://localhost:${port}/never-visited`, dead = "http://localhost:9/nothing-here";
+  siteIconRequests.length = 0;
+  const [freshId, deadId] = await bm(`Promise.all([
+    chrome.bookmarks.create({ parentId: "${lab.folder}", title: "Never visited", url: ${JSON.stringify(fresh)} }),
+    chrome.bookmarks.create({ parentId: "${lab.folder}", title: "No icon anywhere", url: ${JSON.stringify(dead)} }),
+  ]).then((ns) => ns.map((n) => n.id))`);
+  const imgFor = async (id) => evalIn(cdp, panel, `(() => { const i = document.querySelector('[data-key="b:${id}"] img.ico'); return i ? { src: i.src, ok: i.complete && i.naturalWidth > 0 } : null; })()`);
+  const siteIcon = await until(async () => { const i = await imgFor(freshId); return i?.src === `http://localhost:${port}/favicon.ico` && i.ok ? i : null; }, 6000);
+  e.siteIconForNeverVisited = !!siteIcon;
+  // Only bookmarked sites are asked (the lab's never-visited 127.0.0.1 pages count too), nobody else.
+  e.siteIconAskedOnlyBookmarkedSites = siteIconRequests.includes(`localhost:${port}`) && siteIconRequests.every((h) => h === `localhost:${port}` || h === `127.0.0.1:${port}`);
+  e.siteIconHosts = [...siteIconRequests];
+  // A page Chrome has its own icon for keeps it, even on a site whose icon was fetched for another page.
+  const knownPage = await bm(`chrome.bookmarks.search({ title: "Calendar" }).then(([n]) => n.id)`);
+  const known = await imgFor(knownPage);
+  e.cachedIconsKeptOnSameSite = !!known && known.src.startsWith("chrome-extension://") && known.ok;
+  // While asked and after it fails, a site without an icon keeps Chrome's default (never blank).
+  await sleep(1500);
+  const deadImg = await imgFor(deadId);
+  e.deadImg = deadImg;
+  e.noSiteIconKeepsDefault = !!deadImg && deadImg.src.startsWith("chrome-extension://") && deadImg.ok;
+  await shot(cdp, panel, join(runDir, "site-icons.png"));
+  // A site that redirects its icon requests elsewhere: not followed, the globe stays.
+  const redirectId = await bm(`chrome.bookmarks.create({ parentId: "${lab.folder}", title: "Redirecting site", url: "http://localhost:${redirectSite.address().port}/page" }).then((n) => n.id)`);
+  await sleep(2500);
+  const redirectImg = await imgFor(redirectId);
+  // Recorded, not judged: Chrome gives extensions no way to refuse the redirect (see learnings).
+  e.redirectBehaviour = redirectedRequests.length > 0 ? `followed (${redirectedRequests.length} request(s) reached the other site)` : "not followed";
+  e.redirectRowImg = redirectImg;
+  // Switched off while a site is being asked: no further request to it.
+  slowSiteRequests.length = 0;
+  await bm(`chrome.bookmarks.create({ parentId: "${lab.folder}", title: "Slow site", url: "http://localhost:${slowSite.address().port}/page" })`);
+  await until(() => slowSiteRequests.length > 0, 6000);
+  await bm(`chrome.storage.local.set({ siteIcons: false })`);
+  await sleep(4000);
+  // Each window's panel may have asked for /favicon.ico before the switch; none goes on to the next file.
+  e.switchOffStopsPendingSiteRequests = slowSiteRequests.length > 0 && slowSiteRequests.every((path) => path === "/favicon.ico");
+  e.slowSiteRequests = [...slowSiteRequests];
+  e.switchedOffUsesChromeCacheOnly = !!(await until(async () => {
+    const i = await imgFor(freshId);
+    return !!i && i.src.startsWith("chrome-extension://");
+  }));
+  // Switched back on in the same panel: the never-visited bookmark gets its site icon again.
+  await bm(`chrome.storage.local.set({ siteIcons: true })`);
+  e.offThenOnFindsSiteIconAgain = !!(await until(async () => {
+    const i = await imgFor(freshId);
+    return i?.src === `http://localhost:${port}/favicon.ico` && i.ok;
+  }, 6000));
+
   await bm(`chrome.bookmarks.removeTree("${lab.folder}")`);
 }
 
@@ -899,6 +1005,8 @@ if (mode === "measure") {
   writeFileSync(join(runDir, "results.json"), JSON.stringify(results, null, 2));
   log("results", join(runDir, "results.json"));
   server.close();
+  slowSite.close();
+  redirectSite.close();
   const failed = requiredFailures(results);
   if (failed.length) log("FAILED:", failed.join(", "));
   else log("all required checks passed");

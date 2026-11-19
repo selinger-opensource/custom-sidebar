@@ -23,3 +23,8 @@ export const sweepSwitch = (on: boolean, now: number): Record<string, unknown> =
  *  next 03:00, never a catch-up. */
 export const sweepSwitchedOn = (oldValue: unknown, newValue: unknown): boolean =>
   sweepEnabled(newValue) && !sweepEnabled(oldValue);
+
+/** Fetch a site icon from the bookmark's own site when Chrome has none cached (GLOSSARY.md: Site
+ *  icon). On unless switched off. */
+export const SITE_ICONS_KEY = "siteIcons";
+export const siteIcons = (stored: unknown): boolean => stored !== false;
