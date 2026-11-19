@@ -2,7 +2,7 @@
 
 ## What the extension can see
 
-- **Bookmarks:** read only. The extension never creates, edits, moves or deletes a bookmark.
+- **Bookmarks:** read, and changed only when you edit them in the panel (move, edit, delete, new folder, add). The nightly sweep never changes bookmarks.
 - **Tabs:** titles and URLs of the window the side panel sits in, to list them. The nightly sweep reads only tab IDs, activity times and audio state.
 - **Storage:** settings, which folders are expanded, and the sweep's counts-only receipts, in `chrome.storage` on your machine.
 

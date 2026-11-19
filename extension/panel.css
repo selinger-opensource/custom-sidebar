@@ -92,6 +92,40 @@ svg { flex: none; }
 }
 
 /* ---- Footer: the options button, outside the scrolling list ------------------------------ */
-.footer { flex: none; display: flex; justify-content: flex-end; padding: 2px 8px 4px; border-top: 1px solid var(--divider); }
+.footer { flex: none; display: flex; align-items: center; gap: 8px; padding: 2px 8px 4px; border-top: 1px solid var(--divider); }
+.notice { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.notice-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.text-btn { all: unset; color: var(--focus); font-weight: 500; padding: 2px 4px; border-radius: 4px; cursor: default; }
+.text-btn:hover { background: var(--hover); }
+.text-btn:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
 .footer .icon-btn { width: 22px; height: 22px; }
 .icon-btn:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
+
+/* ---- Bookmark edits: the inline editor and the row menu ---------------------------------- */
+.row.editing { height: auto; min-height: 24px; padding-top: 3px; padding-bottom: 3px; align-items: flex-start; background: var(--hover); }
+.row.editing .ico, .row.editing .chev, .row.editing .leaf-pad { margin-top: 3px; }
+.fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.fields input {
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--divider);
+  border-radius: 4px; padding: 2px 5px; outline: none; min-width: 0;
+}
+.fields input:focus { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+.fields input[aria-invalid="true"] { border-color: #d93025; box-shadow: 0 0 0 1px #d93025; }
+.menu {
+  position: fixed; z-index: 10; min-width: 160px; padding: 4px 0; background: var(--bg); color: var(--text);
+  border: 1px solid var(--divider); border-radius: 8px; box-shadow: 0 4px 16px rgb(0 0 0 / 0.18);
+}
+.menu [role="menuitem"] { all: unset; display: block; width: 100%; box-sizing: border-box; padding: 4px 12px; cursor: default; }
+.menu [role="menuitem"]:hover, .menu [role="menuitem"]:focus { background: var(--hover); }
+.menu-sep { border-top: 1px solid var(--divider); margin: 4px 0; }
+
+/* ---- Drag and drop ---------------------------------------------------------------------- */
+.row.drop-before::before, .row.drop-after::after, .section-head.drop-after::after {
+  content: ""; position: absolute; left: calc(8px + var(--depth, 0) * 14px); right: 6px; height: 2px;
+  background: var(--focus); border-radius: 1px; pointer-events: none;
+}
+.row.drop-before::before { top: -1px; }
+.row.drop-after::after, .section-head.drop-after::after { bottom: -1px; }
+.section-head { position: relative; }
+.section-head.sticky { position: sticky; }
+.row.drop-inside { box-shadow: inset 0 0 0 2px var(--focus); background: var(--hover); }

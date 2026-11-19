@@ -1,7 +1,7 @@
 // Side panel page: renders the Sidebar's rows and turns clicks and keys into its commands.
 // Rendering only — what rows exist and what a key does live in sidebar.ts.
 import { COLOUR_TREATMENT_KEY, colourTreatment } from "./settings";
-import { keyResult, openSidebar, rowCommand, type Row, type Sidebar } from "./sidebar";
+import { addPlace, dropPlace, keyResult, openSidebar, rowCommand, type DragSource, type DropZone, type KeyResult, type Place, type Row, type Sidebar } from "./sidebar";
 import { chromeSidebar } from "./sidebar-chrome";
 
 const app = document.getElementById("app")!;
@@ -39,7 +39,8 @@ const favicon = (url: string) =>
 
 // --- Rows to HTML. ---------------------------------------------------------------------------
 function rowHtml(row: Row): string {
-  const attrs = `data-key="${esc(row.key)}" tabindex="-1"`;
+  const draggable = row.kind === "tab" || ((row.kind === "folder" || row.kind === "bookmark") && !row.locked);
+  const attrs = `data-key="${esc(row.key)}" tabindex="-1"${draggable ? ' draggable="true"' : ""}`;
   switch (row.kind) {
     case "section":
       return `<div class="section-head${row.section === "tabs" ? " sticky" : ""}" role="button" aria-expanded="${row.open}" ${attrs}>
@@ -84,6 +85,11 @@ const rowEl = (key: string) => app.querySelector<HTMLElement>(`[data-key="${CSS.
 
 function render(): void {
   if (sidebar === undefined) return;
+  renderFooter();
+  // The inline editor and the menu hold DOM state a re-render would wipe, and a re-render while
+  // a mouse button is down would swallow its click: catch up when they close or it's released.
+  if (overlay || pressing) return void (deferred = true);
+  deferred = false;
   const rows = sidebar.rows();
   const hadFocus = app.contains(document.activeElement);
   const scroll = app.scrollTop;
@@ -93,6 +99,11 @@ function render(): void {
   const stop = rows.find((r) => r.key === focusKey) ?? (focusKey !== undefined ? rows[Math.min(focusIndex, rows.length - 1)] : undefined) ?? rows.find((r) => r.kind === "tab" && r.active) ?? rows[0];
   if (stop) moveStop(stop.key, hadFocus);
   app.dataset.renders = String(++renders); // read by the feasibility harness
+  if (editAfterRender !== undefined && rowEl(editAfterRender)) {
+    const key = editAfterRender;
+    editAfterRender = undefined;
+    openEditor(key);
+  }
 }
 
 function moveStop(key: string, focus: boolean): void {
@@ -109,12 +120,22 @@ function moveStop(key: string, focus: boolean): void {
 }
 
 let frame = 0;
+let fallback: ReturnType<typeof setTimeout> | undefined;
 /** Bursts of events render once per frame. A hidden panel (its window covered or minimised) gets
- *  no frames, so it renders at once instead and is current the moment it's shown again. */
+ *  no frames, so it renders at once instead and is current the moment it's shown again. A panel
+ *  that counts as visible can still go without frames (a covered window when Chrome's occlusion
+ *  tracking is off), so a 100 ms timer renders if no frame came. */
 const scheduleRender = () => {
   cancelAnimationFrame(frame);
-  if (document.hidden) render();
-  else frame = requestAnimationFrame(render);
+  clearTimeout(fallback);
+  if (document.hidden) return render();
+  const once = () => {
+    cancelAnimationFrame(frame);
+    clearTimeout(fallback);
+    render();
+  };
+  frame = requestAnimationFrame(once);
+  fallback = setTimeout(once, 100);
 };
 
 const report = (e: unknown) => console.warn("[sidebar]", e);
@@ -130,7 +151,7 @@ app.addEventListener("click", (e) => {
     return void sidebar.run({ type: "closeTab", id: Number(close.dataset.close) }).catch(report);
   }
   const row = findRow(rowOf(e.target)?.dataset.key);
-  if (!row) return;
+  if (!row || (overlay?.kind === "editor" && overlay.key === row.key)) return;
   moveStop(row.key, true);
   void sidebar.run(rowCommand(row), { background: e.metaKey || e.ctrlKey }).catch(report);
 });
@@ -155,12 +176,303 @@ app.addEventListener("focusin", (e) => {
 
 app.addEventListener("keydown", (e) => {
   const key = rowOf(e.target)?.dataset.key;
-  if (key === undefined || e.altKey) return;
-  const result = keyResult(sidebar.rows(), key, e.key);
-  if (!result.focus && !result.command) return;
+  if (key === undefined || e.target instanceof HTMLInputElement) return;
+  // A held Delete would move on to the next row and delete that too: one press, one delete.
+  if (e.repeat && (e.key === "Delete" || e.key === "Backspace")) return void e.preventDefault();
+  const result = keyResult(sidebar.rows(), key, e.key, { alt: e.altKey, meta: e.metaKey || e.ctrlKey, shift: e.shiftKey });
+  if (Object.keys(result).length === 0) return;
   e.preventDefault();
+  apply(result, e.metaKey || e.ctrlKey);
+});
+
+function apply(result: KeyResult, background = false): void {
   if (result.focus) moveStop(result.focus, true);
-  if (result.command) void sidebar.run(result.command, { background: e.metaKey || e.ctrlKey }).catch(report);
+  if (result.command) void sidebar.run(result.command, { background }).catch(report);
+  if (result.edit) openEditor(result.edit);
+  if (result.menu) openMenu(result.menu);
+}
+
+app.addEventListener("contextmenu", (e) => {
+  const key = rowOf(e.target)?.dataset.key;
+  if (key === undefined || !menuItems(key).length) return; // tabs keep Chrome's own menu
+  e.preventDefault();
+  moveStop(key, true);
+  openMenu(key, e.clientX, e.clientY);
+});
+
+// --- Bookmark edits: the row menu, the inline editor and the footer notice. -------------------
+let overlay: { kind: "editor" | "menu"; key: string } | undefined;
+let pressing = false;
+app.addEventListener("pointerdown", () => void (pressing = true), true);
+for (const ev of ["pointerup", "pointercancel"]) {
+  // After the click this press makes (click follows pointerup in the same task).
+  addEventListener(ev, () => {
+    if (!pressing) return;
+    pressing = false;
+    setTimeout(() => deferred && render(), 0);
+  }, true);
+}
+let deferred = false;
+/** A new folder's row: open its editor as soon as Chrome's event has rendered it. */
+let editAfterRender: string | undefined;
+
+type Editable = Extract<Row, { kind: "folder" | "bookmark" }>;
+const editable = (row: Row | undefined): row is Editable => (row?.kind === "folder" || row?.kind === "bookmark") && !row.locked;
+
+function closeOverlay(refocus: string | undefined): void {
+  overlay = undefined; // first: removing a focused menu can fire its focusout
+  document.querySelector(".menu")?.remove();
+  if (deferred) render();
+  if (refocus !== undefined && rowEl(refocus)) moveStop(refocus, true);
+}
+
+/** The new node's folder (and a folded Bookmarks section) opens first, so you see where it went. */
+async function openParent(at: Place): Promise<void> {
+  const head = sidebar.rows().find((r) => r.kind === "section" && r.section === "bookmarks");
+  if (head?.kind === "section" && !head.open) await sidebar.run({ type: "foldSection", section: "bookmarks", open: true });
+  const parent = sidebar.rows().find((r) => r.kind === "folder" && r.id === at.parentId);
+  if (parent?.kind === "folder" && !parent.open) await sidebar.run({ type: "toggleFolder", id: parent.id, open: true });
+}
+
+function menuItems(key: string): [string, () => void][] {
+  const rows = sidebar.rows();
+  const row = rows.find((r) => r.key === key);
+  const items: [string, () => void][] = [];
+  if (editable(row)) {
+    items.push(["Edit…", () => openEditor(key)]);
+    items.push(["Delete", () => apply(keyResult(sidebar.rows(), key, "Delete"))]);
+  }
+  const at = addPlace(rows, key);
+  if (at) {
+    items.push(["New folder", () => void openParent(at).then(() => sidebar.run({ type: "newFolder", at, title: "New folder" })).then((id) => {
+      if (id === undefined) return;
+      editAfterRender = `b:${id}`;
+      scheduleRender();
+    }).catch(report)]);
+    items.push(["Add current tab", () => void openParent(at).then(() => sidebar.run({ type: "addCurrentTab", at })).catch(report)]);
+  }
+  return items;
+}
+
+function openMenu(key: string, x?: number, y?: number): void {
+  const items = menuItems(key);
+  if (!items.length) return;
+  closeOverlay(undefined);
+  overlay = { kind: "menu", key };
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.setAttribute("role", "menu");
+  items.forEach(([label, action], i) => {
+    if (i === 2) menu.append(Object.assign(document.createElement("div"), { className: "menu-sep", role: "separator" }));
+    const item = Object.assign(document.createElement("button"), { textContent: label, tabIndex: -1 });
+    item.setAttribute("role", "menuitem");
+    item.addEventListener("click", () => {
+      closeOverlay(label === "Edit…" ? undefined : key);
+      action();
+    });
+    menu.append(item);
+  });
+  document.body.append(menu);
+  const at = rowEl(key)!.getBoundingClientRect();
+  const left = Math.min(x ?? at.left + 24, innerWidth - menu.offsetWidth - 4);
+  const top = y ?? at.bottom;
+  menu.style.left = `${Math.max(4, left)}px`;
+  menu.style.top = `${top + menu.offsetHeight > innerHeight - 4 ? Math.max(4, top - menu.offsetHeight) : top}px`;
+  const buttons = [...menu.querySelectorAll<HTMLButtonElement>("button")];
+  buttons[0]!.focus();
+  menu.addEventListener("keydown", (e) => {
+    const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: buttons.length - 1 }[e.key];
+    if (to !== undefined) buttons[(to + buttons.length) % buttons.length]!.focus();
+    else if (e.key === "Escape" || e.key === "Tab") closeOverlay(key);
+    else return;
+    e.preventDefault();
+  });
+  menu.addEventListener("focusout", (e) => {
+    if (!menu.contains(e.relatedTarget as Node | null) && overlay?.kind === "menu") closeOverlay(undefined);
+  });
+}
+
+const validUrl = (url: string) => {
+  try {
+    return Boolean(new URL(url));
+  } catch {
+    return false;
+  }
+};
+
+/** Edits a folder's title, or a bookmark's title and URL, in place. Enter or leaving the row
+ *  saves, Escape cancels; an unusable URL keeps the editor open (or, on leaving, is dropped). */
+function openEditor(key: string): void {
+  const row = findRow(key);
+  const el = rowEl(key);
+  if (!editable(row) || !el) return;
+  closeOverlay(undefined);
+  overlay = { kind: "editor", key };
+  el.classList.add("editing");
+  el.draggable = false; // so the mouse selects text in the fields
+  const fields = document.createElement("span");
+  fields.className = "fields";
+  const field = (label: string, value: string) => {
+    const input = Object.assign(document.createElement("input"), { value, spellcheck: false });
+    input.setAttribute("aria-label", label);
+    fields.append(input);
+    return input;
+  };
+  const title = field(row.kind === "folder" ? "Folder name" : "Name", row.kind === "bookmark" ? row.savedTitle : row.title);
+  const url = row.kind === "bookmark" ? field("URL", row.url) : undefined;
+  el.querySelector(".label")!.replaceWith(fields);
+  el.querySelector(".folder-count")?.remove();
+  title.focus();
+  title.select();
+
+  const finish = (save: boolean, leaving: boolean) => {
+    if (overlay?.kind !== "editor" || overlay.key !== key) return;
+    const t = title.value.trim();
+    const u = url?.value.trim();
+    if (save && u !== undefined && !validUrl(u)) {
+      if (!leaving) {
+        url!.setAttribute("aria-invalid", "true");
+        return url!.focus();
+      }
+      save = false;
+    }
+    const changed = t !== (row.kind === "bookmark" ? row.savedTitle : row.title) || (u !== undefined && row.kind === "bookmark" && u !== row.url);
+    if (save && changed) void sidebar.run({ type: "editBookmark", id: row.id, title: t, ...(u !== undefined && { url: u }) }).catch(report);
+    deferred = true; // the row goes back to plain text now; Chrome's event brings the new values
+    closeOverlay(leaving ? undefined : key);
+  };
+  fields.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") finish(true, false);
+    else if (e.key === "Escape") finish(false, false);
+    else return;
+    e.preventDefault();
+  });
+  fields.addEventListener("focusout", (e) => {
+    if (!fields.contains(e.relatedTarget as Node | null)) finish(true, true);
+  });
+  for (const ev of ["click", "dblclick", "auxclick"]) fields.addEventListener(ev, (e) => e.stopPropagation());
+}
+
+// --- Drag and drop: bookmarks and folders move, a tab dropped in Bookmarks is saved there. -------
+const DRAG_TYPE = "application/x-sidebar-row"; // only our own drags; links from pages are ignored
+let dragSource: DragSource | undefined;
+let dropMark: HTMLElement | undefined;
+let expandTimer: ReturnType<typeof setTimeout> | undefined;
+let expandKey: string | undefined;
+
+function markDrop(el: HTMLElement | undefined, zone?: DropZone): void {
+  dropMark?.classList.remove("drop-before", "drop-after", "drop-inside");
+  dropMark = el;
+  if (el && zone) el.classList.add(`drop-${zone}`);
+}
+function stopExpand(): void {
+  clearTimeout(expandTimer);
+  expandKey = undefined;
+}
+function endDrag(): void {
+  dragSource = undefined;
+  markDrop(undefined);
+  stopExpand();
+}
+
+app.addEventListener("dragstart", (e) => {
+  const row = findRow(rowOf(e.target)?.dataset.key);
+  if (!row || !e.dataTransfer || (overlay?.kind === "editor" && overlay.key === row.key)) return;
+  if (row.kind === "tab") dragSource = { kind: "tab", id: row.id };
+  else if (editable(row)) dragSource = { kind: "bookmark", key: row.key };
+  else return void e.preventDefault();
+  e.dataTransfer.setData(DRAG_TYPE, row.key);
+  if (row.kind === "tab" || row.kind === "bookmark") {
+    // Dropped on Chrome's tab strip or a page, a bookmark or tab opens like a link.
+    e.dataTransfer.setData("text/uri-list", row.url);
+    e.dataTransfer.setData("text/plain", row.url);
+  }
+  e.dataTransfer.effectAllowed = row.kind === "tab" ? "copyLink" : "copyMove";
+  // A render during the drag (a folder opening on hover) replaces this row; its dragend then
+  // never bubbles to #app, so listen on the row itself.
+  rowOf(e.target)!.addEventListener("dragend", endDrag, { once: true });
+});
+
+/** The row under the pointer and which part of it: a folder's middle half means "inside". */
+function dropAt(e: DragEvent): { key: string; el: HTMLElement; zone: DropZone } | undefined {
+  const el = rowOf(e.target);
+  const row = findRow(el?.dataset.key);
+  if (!el || !row) return undefined;
+  if (row.kind === "section") return { key: row.key, el, zone: "after" };
+  const r = el.getBoundingClientRect();
+  const y = (e.clientY - r.top) / r.height;
+  const zone: DropZone = row.kind === "folder" ? (y < 0.25 ? "before" : y > 0.75 ? "after" : "inside") : y < 0.5 ? "before" : "after";
+  return { key: row.key, el, zone };
+}
+
+app.addEventListener("dragover", (e) => {
+  if (!dragSource || !e.dataTransfer?.types.includes(DRAG_TYPE)) return;
+  const at = dropAt(e);
+  const place = at && dropPlace(sidebar.rows(), dragSource, at.key, at.zone);
+  if (!at || !place) {
+    markDrop(undefined);
+    return stopExpand();
+  }
+  e.preventDefault();
+  e.dataTransfer.dropEffect = dragSource.kind === "tab" ? "copy" : "move";
+  markDrop(at.el, at.key === "s:bookmarks" ? "after" : at.zone);
+  // Hovering inside a closed folder opens it, so you can drop deeper.
+  const row = findRow(at.key);
+  if (at.zone === "inside" && row?.kind === "folder" && !row.open) {
+    if (expandKey !== at.key) {
+      stopExpand();
+      expandKey = at.key;
+      expandTimer = setTimeout(() => void sidebar.run({ type: "toggleFolder", id: row.id, open: true }).catch(report), 700);
+    }
+  } else stopExpand();
+});
+
+app.addEventListener("dragleave", (e) => {
+  if (!app.contains(e.relatedTarget as Node | null)) {
+    markDrop(undefined);
+    stopExpand();
+  }
+});
+
+app.addEventListener("drop", (e) => {
+  const source = dragSource;
+  const at = dropAt(e);
+  endDrag();
+  if (!source || !at || !e.dataTransfer?.types.includes(DRAG_TYPE)) return;
+  const place = dropPlace(sidebar.rows(), source, at.key, at.zone);
+  if (!place) return;
+  e.preventDefault();
+  if (source.kind === "bookmark") {
+    const row = findRow(source.key);
+    if (row?.kind === "folder" || row?.kind === "bookmark") void sidebar.run({ type: "moveBookmark", id: row.id, to: place }).catch(report);
+  } else {
+    const row = findRow(`t:${source.id}`);
+    if (row?.kind === "tab") void sidebar.run({ type: "addBookmark", at: place, title: row.title, url: row.url }).catch(report);
+  }
+});
+
+// The footer says what the last Bookmark edit did, with Undo, for about 10 s.
+const noticeBox = document.getElementById("notice")!;
+let noticeHidden = 0;
+let noticeShown = 0;
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+function renderFooter(): void {
+  const n = sidebar.notice();
+  if (!n || n.id <= noticeHidden) return void noticeBox.replaceChildren();
+  if (n.id !== noticeShown) {
+    noticeShown = n.id;
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      noticeHidden = n.id;
+      renderFooter();
+    }, 10_000);
+  }
+  noticeBox.innerHTML = `<span class="notice-text" title="${esc(n.text)}">${esc(n.text)}</span>${n.undo ? '<button class="text-btn" id="undo">Undo</button>' : ""}`;
+}
+noticeBox.addEventListener("click", (e) => {
+  if (e.target instanceof Element && e.target.closest("#undo")) void sidebar.run({ type: "undo" }).catch(report);
 });
 
 document.getElementById("options")!.addEventListener("click", () => void chrome.runtime.openOptionsPage().catch(report));

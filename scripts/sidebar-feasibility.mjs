@@ -516,6 +516,11 @@ async function runInteractions(cdp, runDir, win, panel) {
   });
   r.closeLastTabKeepsPanel = (await panelWindows(cdp)).includes(solo);
 
+  // 13. Bookmark edits (plan bookmark-editing, step 9).
+  // Step 11 replaced and reopened the Human window's panel; the replaced page lingers (no frames)
+  // next to the live one, so bookmarkEdits picks the page that renders its lab folder.
+  r.edits = await bookmarkEdits(cdp, win, tabsIn, runDir);
+
   const CHECKS = ["listsOnlyOwnWindowTabs", "bookmarksFromNativeTree", "keyboardExpandsFolder", "keyboardArrowMovesFocus",
     "bookmarkClickOpensTabInOwnWindow", "aiWindowUntouched", "newTabListedWithoutPolling", "tabClickActivates",
     "closeButtonClosesTab", "closedTabLeavesList", "bookmarkUntouchedByClose", "bookmarkCreateShowsLive",
@@ -525,6 +530,199 @@ async function runInteractions(cdp, runDir, win, panel) {
   r.checks = Object.fromEntries(CHECKS.map((k) => [k, r[k] === true]));
   r.passed = `${Object.values(r.checks).filter(Boolean).length}/${CHECKS.length}`;
   return r;
+}
+
+/** Bookmark edits: Chrome's own write rules (which the unit tests' fake encodes), then the panel's
+ *  keyboard, menu, inline editor, Undo and drag and drop, on a lab folder at the top of the bar. */
+/** The panel page in `windowId` for which `expr` is true (a replaced page lingers beside the live one). */
+async function livePanel(cdp, windowId, expr) {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    for (const t of await panelTargets(cdp)) {
+      const session = (await cdp.send("Target.attachToTarget", { targetId: t.targetId, flatten: true })).sessionId;
+      const ok = await evalIn(cdp, session, `chrome.windows.getCurrent().then((w) => w.id === ${windowId} && (${expr}))`).catch(() => false);
+      if (ok) return session;
+      await cdp.send("Target.detachFromTarget", { sessionId: session }).catch(() => {});
+    }
+    await sleep(250);
+  }
+  throw new Error(`no live panel in window ${windowId}`);
+}
+
+async function bookmarkEdits(cdp, win, tabsIn, runDir) {
+  const e = {};
+  let panel;
+  try {
+    await bookmarkEditSteps(cdp, win, tabsIn, e, (p) => (panel = p), runDir);
+  } catch (err) {
+    e.error = `${e.step}: ${String(err).split("\n")[0]}`;
+    e.debug = {
+      panel: panel === undefined ? "none" : await evalIn(cdp, panel, `({ keys: [...document.querySelectorAll("[data-key]")].map((r) => r.dataset.key).slice(0, 12), hidden: document.hidden, renders: document.getElementById("app").dataset.renders })`).catch((x) => String(x).slice(0, 200)),
+      panelTargets: (await panelTargets(cdp)).length,
+    };
+  }
+  const flat = { ...e.chromeRules, ...e };
+  for (const k of ["chromeRules", "menuItems", "step", "error"]) delete flat[k];
+  e.checks = Object.fromEntries(Object.entries(flat).filter(([, v]) => typeof v === "boolean"));
+  if (e.error) e.checks.completed = false;
+  return e;
+}
+async function bookmarkEditSteps(cdp, win, tabsIn, e, found, runDir) {
+  let panel; // set once the lab folder exists
+  const bm = (expr) => inExt(cdp, expr);
+  const MOD = process.platform === "darwin" ? 4 : 2; // ⌘ on a Mac, Ctrl elsewhere
+  const key = async (k, code, vk, modifiers = 0) => {
+    for (const type of ["rawKeyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", { type, key: k, code, windowsVirtualKeyCode: vk, modifiers }, panel);
+  };
+  const center = (sel, fy = 0.5) => evalIn(cdp, panel, `(() => { const el = document.querySelector(${JSON.stringify(sel)}); el.scrollIntoView({ block: "nearest" });
+    const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height * ${fy} }; })()`);
+  const rightClick = async (sel) => {
+    const { x, y } = await center(sel);
+    for (const type of ["mousePressed", "mouseReleased"]) await cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "right", clickCount: 1 }, panel);
+  };
+  const menuItems = () => evalIn(cdp, panel, `[...document.querySelectorAll('.menu [role="menuitem"]')].map((b) => b.textContent).join("|")`);
+  const menuItem = async (label) => {
+    await evalIn(cdp, panel, `[...document.querySelectorAll('.menu [role="menuitem"]')].find((b) => b.textContent === ${JSON.stringify(label)})?.setAttribute("data-harness-item", "")`);
+    await clickSelector(cdp, panel, "[data-harness-item]");
+  };
+  const focusRow = (id) => evalIn(cdp, panel, `document.querySelector('[data-key="b:${id}"]').focus()`);
+  const editorOpen = (n) => until(() => evalIn(cdp, panel, `document.activeElement?.tagName === "INPUT" && document.querySelectorAll(".row.editing input").length === ${n}`));
+  const titles = (id) => bm(`chrome.bookmarks.getChildren(${JSON.stringify(id)}).then((c) => c.map((n) => n.title))`);
+  const titleOf = (id) => bm(`chrome.bookmarks.get(${JSON.stringify(id)}).then(([n]) => n.title)`);
+  const idOf = (title) => bm(`chrome.bookmarks.search({ title: ${JSON.stringify(title)} }).then(([n]) => n?.id ?? null)`);
+  const O = JSON.stringify(ORIGIN);
+
+  e.step = "1. chrome.bookmarks' rules";
+  // 1. chrome.bookmarks' rules, in a probe folder (removed again).
+  e.chromeRules = await bm(`(async () => {
+    const f = await chrome.bookmarks.create({ title: "Rule probe" });
+    const mk = (t) => chrome.bookmarks.create({ parentId: f.id, title: t, url: ${O} + "/probe/" + t });
+    const a = await mk("a"), b = await mk("b"), c = await mk("c");
+    const order = async () => (await chrome.bookmarks.getChildren(f.id)).map((n) => n.title).join("");
+    const out = {};
+    await chrome.bookmarks.move(a.id, { parentId: f.id, index: 3 });
+    out.moveLaterSkipsOldSlot = (await order()) === "bca";
+    await chrome.bookmarks.move(a.id, { parentId: f.id, index: 0 });
+    out.moveEarlier = (await order()) === "abc";
+    out.createPastEndRefused = await chrome.bookmarks.create({ parentId: f.id, index: 9, title: "x", url: ${O} + "/x" }).then(() => false, () => true);
+    out.movePastEndRefused = await chrome.bookmarks.move(a.id, { parentId: f.id, index: 9 }).then(() => false, () => true);
+    const sub = await chrome.bookmarks.create({ parentId: f.id, title: "sub" });
+    await chrome.bookmarks.create({ parentId: sub.id, title: "deep", url: ${O} + "/deep" });
+    out.removeRefusesNonEmptyFolder = await chrome.bookmarks.remove(sub.id).then(() => false, () => true);
+    const event = new Promise((r) => chrome.bookmarks.onRemoved.addListener(function l(id, info) {
+      if (id === sub.id) { chrome.bookmarks.onRemoved.removeListener(l); r(info); } }));
+    await chrome.bookmarks.removeTree(sub.id);
+    const info = await event;
+    out.removedEventHasSubtree = info.node?.children?.[0]?.title === "deep" && info.parentId === f.id && info.index === 3;
+    const updated = await chrome.bookmarks.update(b.id, { title: "B" });
+    out.updateTitleKeepsUrl = updated.title === "B" && updated.url === ${O} + "/probe/b";
+    await chrome.bookmarks.removeTree(f.id);
+    return out;
+  })()`);
+
+  e.step = 'A lab folder first in the bar';
+  // A lab folder first in the bar, opened in the panel.
+  const lab = await bm(`(async () => {
+    const [bar] = (await chrome.bookmarks.getTree())[0].children;
+    const f = await chrome.bookmarks.create({ parentId: bar.id, index: 0, title: "Edit lab" });
+    for (const t of ["Alpha", "Beta", "Gamma"]) await chrome.bookmarks.create({ parentId: f.id, title: t, url: ${O} + "/lab/" + t.toLowerCase() });
+    const sub = await chrome.bookmarks.create({ parentId: f.id, title: "Lab sub" });
+    for (const t of ["One", "Two"]) await chrome.bookmarks.create({ parentId: sub.id, title: t, url: ${O} + "/lab/" + t.toLowerCase() });
+    return { folder: f.id, sub: sub.id };
+  })()`);
+  panel = await livePanel(cdp, win.human, `!!document.querySelector('[data-key="b:${lab.folder}"]')`);
+  found(panel);
+  await clickSelector(cdp, panel, `[data-key="b:${lab.folder}"]`);
+  const alpha = await idOf("Alpha"), beta = await idOf("Beta"), gamma = await idOf("Gamma");
+  await until(() => evalIn(cdp, panel, `!!document.querySelector('[data-key="b:${alpha}"]')`));
+
+  e.step = '2. F2 edits in place';
+  // 2. F2 edits in place; Enter saves; ⌘Z undoes.
+  await focusRow(alpha);
+  await key("F2", "F2", 113);
+  e.f2OpensEditorWithTitleAndUrl = !!(await editorOpen(2));
+  await shot(cdp, panel, join(runDir, "edit-editor.png"));
+  await cdp.send("Input.insertText", { text: "Alpha renamed" }, panel);
+  await key("Enter", "Enter", 13);
+  e.editSaves = !!(await until(async () => (await titleOf(alpha)) === "Alpha renamed"));
+  e.editNotice = !!(await until(() => evalIn(cdp, panel, `document.querySelector("#notice .notice-text")?.textContent.startsWith("Edited") ?? false`)));
+  await focusRow(alpha);
+  await key("z", "KeyZ", 90, MOD);
+  e.cmdZUndoesEdit = !!(await until(async () => (await titleOf(alpha)) === "Alpha"));
+
+  e.step = '3. Editing';
+  // 3. Editing, then clicking another bookmark once: the edit saves and the click opens it.
+  await focusRow(alpha);
+  await key("F2", "F2", 113);
+  await editorOpen(2);
+  await cdp.send("Input.insertText", { text: "Alpha again" }, panel);
+  const tabsBefore = (await tabsIn(win.human)).length;
+  await clickSelector(cdp, panel, `[data-key="b:${beta}"] .label`);
+  e.clickAfterEditSaves = !!(await until(async () => (await titleOf(alpha)) === "Alpha again"));
+  e.clickAfterEditOpensClicked = !!(await until(async () => (await tabsIn(win.human)).length === tabsBefore + 1));
+
+  e.step = '4. Delete on a folder';
+  // 4. Delete on a folder removes it whole; Undo in the footer rebuilds it.
+  await focusRow(lab.sub);
+  await key("Delete", "Delete", 46);
+  e.deleteRemovesFolder = !!(await until(async () => !(await titles(lab.folder)).includes("Lab sub")));
+  await until(() => evalIn(cdp, panel, `!!document.querySelector("#undo")`));
+  await shot(cdp, panel, join(runDir, "edit-undo-notice.png"));
+  await clickSelector(cdp, panel, "#undo");
+  e.undoRestoresSubtree = !!(await until(async () => {
+    const id = await idOf("Lab sub");
+    return id !== null && (await titles(id)).join(",") === "One,Two";
+  }));
+
+  e.step = '5. The menu';
+  // 5. The menu: items, Add current tab, New folder with its editor; a root folder offers adds only.
+  await rightClick(`[data-key="b:${lab.folder}"]`);
+  e.menuItems = await until(menuItems) || "";
+  await shot(cdp, panel, join(runDir, "edit-menu.png"));
+  e.menuOnFolder = e.menuItems === "Edit…|Delete|New folder|Add current tab";
+  const activeUrl = await bm(`chrome.tabs.query({ windowId: ${win.human}, active: true }).then(([t]) => t.url)`);
+  await menuItem("Add current tab");
+  e.addCurrentTab = !!(await until(async () => (await bm(`chrome.bookmarks.getChildren("${lab.folder}").then((c) => c.at(-1)?.url)`)) === activeUrl));
+  await rightClick(`[data-key="b:${lab.folder}"]`);
+  await until(menuItems);
+  await menuItem("New folder");
+  e.newFolderOpensEditor = !!(await editorOpen(1));
+  await cdp.send("Input.insertText", { text: "Fresh" }, panel);
+  await key("Enter", "Enter", 13);
+  e.newFolderNamed = !!(await until(async () => (await titles(lab.folder)).includes("Fresh")));
+  const otherKey = await evalIn(cdp, panel, `[...document.querySelectorAll(".row.folder")].find((r) => r.querySelector(".label")?.textContent === "Other bookmarks")?.dataset.key ?? null`);
+  if (otherKey) {
+    await rightClick(`[data-key="${otherKey}"]`);
+    e.rootMenuAddsOnly = (await until(menuItems)) === "New folder|Add current tab";
+    await key("Escape", "Escape", 27);
+  } else e.rootMenuAddsOnly = "skipped: no Other bookmarks row";
+
+  e.step = '6. Drag and drop';
+  // 6. Drag and drop (CDP drag interception): Gamma before Alpha; this window's first tab into the lab folder.
+  const drag = async (fromSel, toSel, fy) => {
+    const a = await center(fromSel);
+    await cdp.send("Input.setInterceptDrags", { enabled: true }, panel);
+    const intercepted = new Promise((resolve) => cdp.listeners.push((m) => {
+      if (m.method === "Input.dragIntercepted" && m.sessionId === panel) resolve(m.params.data);
+    }));
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: a.x, y: a.y, button: "left", buttons: 1, clickCount: 1 }, panel);
+    const b = await center(toSel, fy);
+    for (let i = 1; i <= 6; i++) {
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: a.x + ((b.x - a.x) * i) / 6, y: a.y + ((b.y - a.y) * i) / 6, button: "left", buttons: 1 }, panel);
+    }
+    const data = await Promise.race([intercepted, sleep(2000).then(() => null)]);
+    if (data) for (const type of ["dragEnter", "dragOver", "drop"]) await cdp.send("Input.dispatchDragEvent", { type, x: b.x, y: b.y, data }, panel);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: b.x, y: b.y, button: "left", clickCount: 1 }, panel);
+    await cdp.send("Input.setInterceptDrags", { enabled: false }, panel);
+    return !!data;
+  };
+  e.dragIntercepted = await drag(`[data-key="b:${gamma}"]`, `[data-key="b:${alpha}"]`, 0.15);
+  e.dragMovesBookmark = !!(await until(async () => (await titles(lab.folder))[0] === "Gamma"));
+  const [firstTab] = await tabsIn(win.human);
+  await drag(`[data-key="t:${firstTab.id}"]`, `[data-key="b:${lab.folder}"]`, 0.5);
+  e.tabDropSavesBookmark = !!(await until(async () => (await bm(`chrome.bookmarks.getChildren("${lab.folder}").then((c) => c.at(-1)?.url)`)) === ORIGIN + firstTab.url)); // tabsIn strips ORIGIN
+  e.tabStaysOpen = (await tabsIn(win.human)).some((t) => t.id === firstTab.id);
+
+  await bm(`chrome.bookmarks.removeTree("${lab.folder}")`);
 }
 
 async function optionsPage(cdp, win, panel, runDir) {
@@ -716,6 +914,7 @@ function requiredFailures(results) {
     const i = r.interactions ?? {};
     for (const [k, ok] of Object.entries(i.checks ?? {})) if (!ok) failed.push(k);
     for (const [k, ok] of Object.entries(i.options ?? {})) if (typeof ok === "boolean" && !ok) failed.push(`options.${k}`);
+    for (const [k, ok] of Object.entries(i.edits?.checks ?? {})) if (!ok) failed.push(`edits.${k}`);
   }
   const restart = results.restart;
   if (restart?.error) failed.push(`restart: ${restart.error.split("\n")[0]}`);

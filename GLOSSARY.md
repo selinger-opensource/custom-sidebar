@@ -2,7 +2,10 @@
 
 The words the code uses. New concepts get a term here before they get a name in code.
 
-- **Sidebar**: the extension's side panel showing native bookmarks (read-only) above the tabs of the window it sits in; one independent instance per window. Not a tab-strip replacement: Chrome's own tab strip stays.
+- **Sidebar**: the extension's side panel showing native bookmarks above the tabs of the window it sits in; one independent instance per window. It changes bookmarks only through a Bookmark edit. Not a tab-strip replacement: Chrome's own tab strip stays.
+- **Bookmark edit**: one change a person makes to native bookmarks in the Sidebar: a move (drag or ⌥↑/↓), an edit of title/URL, a delete, a new folder, or adding a bookmark (a dropped tab, Add current tab). The nightly sweep never makes one.
+- **Drop place**: where a dragged bookmark or tab would land (a parent folder and an index in `chrome.bookmarks` coordinates), or none when the drop isn't allowed.
+- **Undo**: reverses the last Bookmark edit of that window's Sidebar; ends with the next edit or a panel reload. Undoing a delete recreates the bookmarks with new IDs.
 - **Folding**: which bookmark folders are expanded and which Sidebar sections (Bookmarks, Tabs) are folded; remembered per profile, shared by every window's Sidebar.
 - **Colour treatment**: the Sidebar's palette, Neutral (Chrome-like, the default) or Warm; each follows the system's light/dark setting.
 - **Navigation footprint**: horizontal pixels the window spends on navigation UI (native tab strip or rail + side panel); the page keeps the rest.

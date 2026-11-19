@@ -12,14 +12,15 @@ A Chrome extension that puts your **bookmarks above the tabs of the current wind
 
 ## What it does
 
-- **Bookmarks** from Chrome's own bookmarks, read-only: the bookmarks bar inline, folders that expand, "Other bookmarks" as a folder. Clicking one opens it in this window (⌘/Ctrl-click or middle-click: in the background).
+- **Bookmarks** from Chrome's own bookmarks: the bookmarks bar inline, folders that expand, "Other bookmarks" as a folder. Clicking one opens it in this window (⌘/Ctrl-click or middle-click: in the background).
+- **Edit bookmarks in place:** drag to move bookmarks and folders, drag a tab in to save it, and right-click for Edit (title and URL), Delete, New folder and Add current tab. Keys: F2 edit, Delete delete, ⌥↑/⌥↓ move, ⌘/Ctrl+Z undo, Shift+F10 menu. The last edit can be undone from the footer.
 - **Tabs** of the window the panel sits in, in tab-strip order: click to switch, × or middle-click to close, and a New tab row. Each window has its own independent panel.
 - Both sections fold, and the panel remembers which folders are open.
 - Updates live from Chrome's events; nothing polls.
 - Two colour treatments, **Neutral** (like Chrome, the default) and **Warm**, each following your system's light or dark mode.
 - **Nightly sweep (off by default):** once a day at 03:00, or the first time Chrome runs after that, it closes tabs not used in the last 3 hours. It keeps the selected tab of the focused window and tabs playing audio, never closes a window, and never touches bookmarks. Switch it on in the options.
 
-What it deliberately doesn't do: edit or drag bookmarks, show tabs of other windows, search, archive tabs, replace the New Tab page, or phone home.
+What it deliberately doesn't do: show tabs of other windows, search, archive tabs, replace the New Tab page, or phone home.
 
 ## Install
 
@@ -44,7 +45,7 @@ One tab stop for the whole list. ↑/↓, Home/End move; → opens a folder or s
 | Permission | Why |
 |---|---|
 | `sidePanel` | The panel itself. |
-| `bookmarks` | Read your bookmarks. Chrome warns "Read and change your bookmarks"; the extension only reads. |
+| `bookmarks` | Read your bookmarks, and change them when you edit them in the panel. Chrome warns "Read and change your bookmarks". |
 | `tabs` | Titles and URLs of the panel's window. Chrome warns "Read your browsing history". |
 | `favicon` | Site icons from Chrome's local favicon cache (a never-visited bookmark shows a globe). |
 | `storage` | Settings, open folders, and the sweep's counts-only receipts, on your machine. |

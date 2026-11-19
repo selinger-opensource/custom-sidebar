@@ -1,12 +1,15 @@
 import { describe, expect, test } from "vitest";
 import {
   NO_FOLDING,
+  addPlace,
+  dropPlace,
   keyResult,
   openSidebar,
   rowCommand,
   sidebarRows,
   type BookmarkNode,
   type Folding,
+  type Place,
   type Row,
   type SidebarBrowser,
   type SidebarEvent,
@@ -91,6 +94,21 @@ describe("sidebarRows", () => {
     expect(tabsFolded.at(-1)).toMatchObject({ count: 1, open: false });
   });
 
+  test("bookmark and folder rows know their place; root and managed folders are locked", () => {
+    const managed: BookmarkNode = { id: "50", title: "Work", unmodifiable: "managed", children: [link("51", "Intranet")] };
+    const rows = sidebarRows(tree({ bar: BAR, other: [link("20", "Recipes")] }), [], folding({ expanded: ["11", "2"] }));
+    const at = (key: string) => rows.find((r) => r.key === key)!;
+    expect(at("b:10")).toMatchObject({ parentId: "1", index: 0, locked: false });
+    expect(at("b:11")).toMatchObject({ parentId: "1", index: 1, locked: false });
+    expect(at("b:13")).toMatchObject({ parentId: "11", index: 1, locked: false });
+    expect(at("b:15")).toMatchObject({ parentId: "1", index: 2 });
+    expect(at("b:2")).toMatchObject({ parentId: "0", index: 1, locked: true });
+    expect(at("b:20")).toMatchObject({ parentId: "2", index: 0, locked: false });
+    const withManaged = sidebarRows(tree({ bar: [managed] }), [], folding({ expanded: ["50"] }));
+    expect(withManaged.find((r) => r.key === "b:50")).toMatchObject({ locked: true });
+    expect(withManaged.find((r) => r.key === "b:51")).toMatchObject({ locked: true });
+  });
+
   test("long titles pass through whole (the page truncates); blank titles fall back", () => {
     const long = "A very long title ".repeat(20);
     const rows = sidebarRows(
@@ -99,7 +117,8 @@ describe("sidebarRows", () => {
       NO_FOLDING,
     );
     expect(rows.find((r) => r.key === "b:10")).toMatchObject({ title: long });
-    expect(rows.find((r) => r.key === "b:16")).toMatchObject({ title: "https://blank.test/page" });
+    expect(rows.find((r) => r.key === "b:16")).toMatchObject({ title: "https://blank.test/page", savedTitle: "" });
+    expect(rows.find((r) => r.key === "b:10")).toMatchObject({ savedTitle: long });
     expect(rows.find((r) => r.key === "t:1")).toMatchObject({ title: "https://untitled.test/x" });
     expect(rows.find((r) => r.key === "t:2")).toMatchObject({ title: "New Tab" });
   });
@@ -143,17 +162,43 @@ describe("rowCommand and keyResult", () => {
   test("Enter and Space activate the focused row", () => {
     expect(keyResult(rows, "t:3", "Enter")).toEqual({ command: { type: "selectTab", id: 3 } });
     expect(keyResult(rows, "b:11", " ")).toEqual({ command: { type: "toggleFolder", id: "11", open: false } });
+    expect(keyResult(rows, "b:10", "Enter", { meta: true })).toEqual({ command: { type: "openBookmark", url: "https://example.test/10" } });
   });
 
   test("Delete closes a tab and moves focus to the next one, or back from the last", () => {
     expect(keyResult(rows, "t:2", "Delete")).toEqual({ focus: "t:3", command: { type: "closeTab", id: 2 } });
     expect(keyResult(rows, "t:3", "Backspace")).toEqual({ focus: "t:2", command: { type: "closeTab", id: 3 } });
-    expect(keyResult(rows, "b:10", "Delete")).toEqual({});
   });
 
   test("closing the only tab moves focus to New tab", () => {
     const one = sidebarRows(tree(), [tab(7, { active: true })], NO_FOLDING);
     expect(keyResult(one, "t:7", "Delete")).toEqual({ focus: "newtab", command: { type: "closeTab", id: 7 } });
+  });
+
+  test("editing keys on bookmarks and folders: F2 edits, Delete deletes, ⌥↑/⌥↓ move, ⌘Z undoes, Shift+F10 opens the menu", () => {
+    // rows: s:bookmarks, b:10, b:11 (open: b:12, b:13), b:15, s:tabs, t:1..3, newtab
+    expect(keyResult(rows, "b:12", "F2")).toEqual({ edit: "b:12" });
+    expect(keyResult(rows, "b:10", "Delete")).toEqual({ focus: "b:11", command: { type: "removeBookmark", id: "10" } });
+    expect(keyResult(rows, "b:11", "Backspace")).toEqual({ focus: "b:15", command: { type: "removeBookmark", id: "11" } });
+    expect(keyResult(rows, "b:15", "Delete")).toEqual({ focus: "b:11", command: { type: "removeBookmark", id: "15" } });
+    expect(keyResult(rows, "b:13", "Delete")).toEqual({ focus: "b:12", command: { type: "removeBookmark", id: "13" } });
+    expect(keyResult(rows, "b:15", "ArrowUp", { alt: true })).toEqual({ command: { type: "moveBookmark", id: "15", to: { parentId: "1", index: 1 } } });
+    expect(keyResult(rows, "b:10", "ArrowDown", { alt: true })).toEqual({ command: { type: "moveBookmark", id: "10", to: { parentId: "1", index: 2 } } });
+    expect(keyResult(rows, "b:10", "ArrowUp", { alt: true })).toEqual({});
+    expect(keyResult(rows, "b:13", "ArrowDown", { alt: true })).toEqual({});
+    expect(keyResult(rows, "t:1", "z", { meta: true })).toEqual({ command: { type: "undo" } });
+    expect(keyResult(rows, "b:10", "z")).toEqual({});
+    expect(keyResult(rows, "b:12", "F10", { shift: true })).toEqual({ menu: "b:12" });
+    expect(keyResult(rows, "s:bookmarks", "ContextMenu")).toEqual({ menu: "s:bookmarks" });
+  });
+
+  test("locked rows, tabs and headings ignore the editing keys", () => {
+    const withOther = sidebarRows(tree({ bar: BAR, other: [link("20", "Recipes")] }), [tab(1)], NO_FOLDING);
+    expect(keyResult(withOther, "b:2", "F2")).toEqual({});
+    expect(keyResult(withOther, "b:2", "Delete")).toEqual({});
+    expect(keyResult(withOther, "b:2", "ArrowUp", { alt: true })).toEqual({});
+    expect(keyResult(withOther, "t:1", "F2")).toEqual({});
+    expect(keyResult(withOther, "s:tabs", "Delete")).toEqual({});
   });
 
   test("an unknown focus or key does nothing", () => {
@@ -162,9 +207,115 @@ describe("rowCommand and keyResult", () => {
   });
 });
 
+// --- Drop places. --------------------------------------------------------------------------------
+describe("dropPlace", () => {
+  // Bar: Mail(10) · Everyday(11, open: Chat 12, Deep 13) · Empty(15); Other bookmarks(2): Recipes(20).
+  const rows = sidebarRows(tree({ bar: BAR, other: [link("20", "Recipes")] }), [tab(1)], folding({ expanded: ["11"] }));
+  const mark = (key: string) => ({ kind: "bookmark" as const, key });
+
+  test("before and after a bookmark: its folder, at or after its position", () => {
+    expect(dropPlace(rows, mark("b:15"), "b:12", "before")).toEqual({ parentId: "11", index: 0 });
+    expect(dropPlace(rows, mark("b:15"), "b:12", "after")).toEqual({ parentId: "11", index: 1 });
+    expect(dropPlace(rows, mark("b:12"), "b:15", "after")).toEqual({ parentId: "1", index: 3 });
+  });
+
+  test("into a folder appends; after an open folder lands first inside it", () => {
+    expect(dropPlace(rows, mark("b:10"), "b:11", "inside")).toEqual({ parentId: "11", index: 2 });
+    expect(dropPlace(rows, mark("b:10"), "b:15", "inside")).toEqual({ parentId: "15", index: 0 });
+    expect(dropPlace(rows, mark("b:10"), "b:11", "after")).toEqual({ parentId: "11", index: 0 });
+    expect(dropPlace(rows, mark("b:10"), "b:13", "after")).toEqual({ parentId: "11", index: 2 });
+  });
+
+  test("onto the Bookmarks heading: first in the bookmarks bar", () => {
+    expect(dropPlace(rows, mark("b:15"), "s:bookmarks", "after")).toEqual({ parentId: "1", index: 0 });
+  });
+
+  test("a root folder takes drops inside, never beside it, and never moves", () => {
+    expect(dropPlace(rows, mark("b:10"), "b:2", "inside")).toEqual({ parentId: "2", index: 1 });
+    expect(dropPlace(rows, mark("b:10"), "b:2", "before")).toBeUndefined();
+    expect(dropPlace(rows, mark("b:10"), "b:2", "after")).toBeUndefined();
+    expect(dropPlace(rows, mark("b:2"), "b:10", "before")).toBeUndefined();
+  });
+
+  test("a folder can't go into itself or anything inside it", () => {
+    expect(dropPlace(rows, mark("b:11"), "b:11", "inside")).toBeUndefined();
+    expect(dropPlace(rows, mark("b:11"), "b:13", "inside")).toBeUndefined();
+    expect(dropPlace(rows, mark("b:11"), "b:12", "before")).toBeUndefined();
+    expect(dropPlace(rows, mark("b:11"), "b:11", "after")).toBeUndefined();
+  });
+
+  test("a drop that leaves the bookmark where it is gives no place", () => {
+    expect(dropPlace(rows, mark("b:12"), "b:12", "before")).toBeUndefined();
+    expect(dropPlace(rows, mark("b:12"), "b:12", "after")).toBeUndefined();
+    expect(dropPlace(rows, mark("b:12"), "b:13", "before")).toBeUndefined();
+    expect(dropPlace(rows, mark("b:13"), "b:12", "before")).toEqual({ parentId: "11", index: 0 });
+  });
+
+  test("a bookmark is never placed on a bookmark (inside), in Tabs, or from a locked folder", () => {
+    expect(dropPlace(rows, mark("b:10"), "b:12", "inside")).toBeUndefined();
+    expect(dropPlace(rows, mark("b:10"), "t:1", "before")).toBeUndefined();
+    expect(dropPlace(rows, mark("b:10"), "s:tabs", "after")).toBeUndefined();
+    const managed = sidebarRows(
+      tree({ bar: [link("10", "Mail"), { id: "50", title: "Work", unmodifiable: "managed", children: [link("51", "Intranet")] }] }),
+      [],
+      folding({ expanded: ["50"] }),
+    );
+    expect(dropPlace(managed, mark("b:51"), "b:10", "before")).toBeUndefined();
+    expect(dropPlace(managed, mark("b:10"), "b:50", "inside")).toBeUndefined();
+    expect(dropPlace(managed, mark("b:10"), "b:51", "after")).toBeUndefined();
+  });
+
+  test("a Chrome-managed top-level folder takes no drops", () => {
+    const managedRoot = [{ id: "0", title: "", children: [
+      { id: "1", title: "Bookmarks bar", folderType: "bookmarks-bar", children: [link("10", "Mail")] },
+      { id: "4", title: "Managed", folderType: "managed", unmodifiable: "managed", children: [link("41", "Intranet")] },
+    ] }];
+    const r = sidebarRows(managedRoot, [], NO_FOLDING);
+    expect(dropPlace(r, mark("b:10"), "b:4", "inside")).toBeUndefined();
+    expect(addPlace(r, "b:4")).toBeUndefined();
+  });
+
+  test("a tab lands like a bookmark, without the same-slot rule", () => {
+    expect(dropPlace(rows, { kind: "tab", id: 1 }, "b:12", "after")).toEqual({ parentId: "11", index: 1 });
+    expect(dropPlace(rows, { kind: "tab", id: 1 }, "b:2", "inside")).toEqual({ parentId: "2", index: 1 });
+    expect(dropPlace(rows, { kind: "tab", id: 1 }, "t:1", "after")).toBeUndefined();
+  });
+});
+
+describe("addPlace (the menu's New folder and Add current tab)", () => {
+  const rows = sidebarRows(tree({ bar: BAR, other: [link("20", "Recipes")] }), [tab(1)], folding({ expanded: ["11"] }));
+  test("after a bookmark; at the end inside a folder or root folder; first in the bar from the heading", () => {
+    expect(addPlace(rows, "b:12")).toEqual({ parentId: "11", index: 1 });
+    expect(addPlace(rows, "b:11")).toEqual({ parentId: "11", index: 2 });
+    expect(addPlace(rows, "b:2")).toEqual({ parentId: "2", index: 1 });
+    expect(addPlace(rows, "s:bookmarks")).toEqual({ parentId: "1", index: 0 });
+  });
+  test("nowhere from tabs or inside a locked folder", () => {
+    expect(addPlace(rows, "t:1")).toBeUndefined();
+    expect(addPlace(rows, "s:tabs")).toBeUndefined();
+    const managed = sidebarRows(tree({ bar: [{ id: "50", title: "Work", unmodifiable: "managed", children: [link("51", "Intranet")] }] }), [], folding({ expanded: ["50"] }));
+    expect(addPlace(managed, "b:50")).toBeUndefined();
+    expect(addPlace(managed, "b:51")).toBeUndefined();
+  });
+});
+
 // --- Session over the SidebarBrowser seam (fake adapter). -------------------------------------
+/** Finds a node and where it sits; undefined when it's gone. */
+function locate(nodes: BookmarkNode[], id: string): { node: BookmarkNode; siblings: BookmarkNode[]; index: number } | undefined {
+  for (const n of nodes) {
+    const kids = n.children ?? [];
+    const index = kids.findIndex((c) => c.id === id);
+    if (index >= 0) return { node: kids[index]!, siblings: kids, index };
+    const deeper = locate(kids, id);
+    if (deeper) return deeper;
+  }
+  return undefined;
+}
+const titlesIn = (b: FakeBrowser, folderId: string) => (locate(b.bookmarks, folderId)?.node.children ?? []).map((n) => n.title);
+
 class FakeBrowser implements SidebarBrowser {
-  bookmarks = tree({ bar: BAR });
+  bookmarks: BookmarkNode[] = structuredClone(tree({ bar: BAR }));
+  private nextId = 100;
   tabsByWindow = new Map<number, TabInfo[]>([
     [1, [tab(1, { active: true }), tab(2)]],
     [2, [tab(5, { active: true })]],
@@ -204,6 +355,56 @@ class FakeBrowser implements SidebarBrowser {
   }
   async newTab(windowId: number) {
     this.calls.push(`new ${windowId}`);
+  }
+  // Bookmark writes, with chrome.bookmarks' rules: `index` is a slot in the folder as it is now,
+  // and a move within one folder to a later slot lands one earlier (its old slot is gone).
+  private found(id: string) {
+    const at = locate(this.bookmarks, id);
+    if (!at) throw new Error(`Can't find bookmark for id.`);
+    return at;
+  }
+  private changed() {
+    this.listener?.({ kind: "bookmarks" });
+  }
+  async moveBookmark(id: string, to: Place) {
+    const from = this.found(id);
+    const parent = this.found(to.parentId).node;
+    if (locate([from.node], to.parentId) || to.parentId === id) throw new Error("Can't move a folder into itself.");
+    if (to.index > parent.children!.length) throw new Error("Index out of bounds.");
+    const index = from.siblings === parent.children && to.index > from.index ? to.index - 1 : to.index;
+    from.siblings.splice(from.index, 1);
+    parent.children!.splice(index, 0, from.node);
+    this.calls.push(`move ${id} ${to.parentId}/${to.index}`);
+    this.changed();
+  }
+  async updateBookmark(id: string, changes: { title?: string; url?: string }) {
+    await this.slow();
+    Object.assign(this.found(id).node, changes);
+    this.calls.push(`update ${id}`);
+    this.changed();
+  }
+  /** Delay for the next writes (a slow Chrome), to test ordering. */
+  writeDelay = 0;
+  private async slow() {
+    if (this.writeDelay) await new Promise((r) => setTimeout(r, this.writeDelay));
+  }
+  async removeBookmark(id: string, whole: boolean) {
+    await this.slow();
+    const at = this.found(id);
+    if (!whole && at.node.url === undefined && at.node.children!.length > 0) throw new Error("Can't remove non-empty folder (use recursive to force).");
+    at.siblings.splice(at.index, 1);
+    this.calls.push(`remove ${id}`);
+    this.changed();
+    return structuredClone(at.node); // what Chrome had, not what the panel last read
+  }
+  async createBookmark(at: Place, node: { title: string; url?: string }) {
+    const parent = this.found(at.parentId).node;
+    if (at.index > parent.children!.length) throw new Error("Index out of bounds.");
+    const id = String(this.nextId++);
+    parent.children!.splice(at.index, 0, { id, title: node.title, ...(node.url !== undefined ? { url: node.url } : { children: [] }) });
+    this.calls.push(`create ${id} in ${at.parentId}/${at.index}`);
+    this.changed();
+    return id;
   }
   emit(e: SidebarEvent) {
     this.listener!(e);
@@ -324,5 +525,203 @@ describe("openSidebar", () => {
   test("a fresh profile starts with every folder closed and both sections open", async () => {
     const sidebar = await openSidebar(new FakeBrowser(), () => {});
     expect(keys(sidebar.rows())).toEqual(["s:bookmarks", "b:10", "b:11", "b:15", "s:tabs", "t:1", "t:2", "newtab"]);
+  });
+});
+
+// --- Bookmark edits and Undo. ---------------------------------------------------------------------
+describe("the fake follows chrome.bookmarks' move rule", () => {
+  // Matches Chromium's BookmarkModel::Move; the check against real Chrome is the feasibility
+  // harness's job (bookmark-editing plan, step 9; pending).
+  test("index is a slot in the folder as it is now; moving later skips the old slot", async () => {
+    const b = new FakeBrowser();
+    await b.moveBookmark("10", { parentId: "1", index: 3 });
+    expect(titlesIn(b, "1")).toEqual(["Everyday", "Empty", "Mail"]);
+    await b.moveBookmark("15", { parentId: "1", index: 0 });
+    expect(titlesIn(b, "1")).toEqual(["Empty", "Everyday", "Mail"]);
+    await b.moveBookmark("11", { parentId: "1", index: 2 });
+    expect(titlesIn(b, "1")).toEqual(["Empty", "Everyday", "Mail"]);
+  });
+});
+
+describe("Bookmark edits", () => {
+  const open = async (b = new FakeBrowser()) => ({ b, sidebar: await openSidebar(b, () => {}) });
+
+  test("a move goes to Chrome; rows follow its event; Undo puts it back (both directions, across folders)", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "moveBookmark", id: "10", to: { parentId: "1", index: 3 } });
+    await settle();
+    expect(keys(sidebar.rows()).slice(0, 4)).toEqual(["s:bookmarks", "b:11", "b:15", "b:10"]);
+    expect(sidebar.notice()).toMatchObject({ text: "Moved ‘Mail’", undo: true });
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Mail", "Everyday", "Empty"]);
+    await sidebar.run({ type: "moveBookmark", id: "15", to: { parentId: "1", index: 0 } });
+    await settle();
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Mail", "Everyday", "Empty"]);
+    await sidebar.run({ type: "moveBookmark", id: "12", to: { parentId: "1", index: 1 } });
+    await settle();
+    expect(titlesIn(b, "11")).toEqual(["Deep"]);
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(titlesIn(b, "11")).toEqual(["Chat", "Deep"]);
+    expect(titlesIn(b, "1")).toEqual(["Mail", "Everyday", "Empty"]);
+  });
+
+  test("an edit changes title and URL; Undo restores both", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Post", url: "https://post.test/" });
+    await settle();
+    expect(sidebar.rows().find((r) => r.key === "b:10")).toMatchObject({ title: "Post", url: "https://post.test/" });
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(locate(b.bookmarks, "10")!.node).toMatchObject({ title: "Mail", url: "https://example.test/10" });
+  });
+
+  test("deleting a folder removes it whole; Undo rebuilds it in order, with new IDs and its folding", async () => {
+    const b = new FakeBrowser();
+    b.stored = folding({ expanded: ["11", "13"] });
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "removeBookmark", id: "11" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Mail", "Empty"]);
+    expect(sidebar.notice()).toMatchObject({ text: "Deleted ‘Everyday’", undo: true });
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Mail", "Everyday", "Empty"]);
+    const everyday = locate(b.bookmarks, "1")!.node.children![1]!;
+    expect(everyday.id).not.toBe("11");
+    expect(everyday.children!.map((n) => n.title)).toEqual(["Chat", "Deep"]);
+    expect(everyday.children![0]).toMatchObject({ url: "https://example.test/12" });
+    expect(everyday.children![1]!.children!.map((n) => n.title)).toEqual(["Deeper"]);
+    // The rebuilt folders are open again, as they were.
+    expect(b.stored!.expanded).toEqual(expect.arrayContaining([everyday.id, everyday.children![1]!.id]));
+    expect(keys(sidebar.rows())).toContain(`b:${everyday.children![1]!.children![0]!.id}`);
+  });
+
+  test("new folder and added bookmarks return their id; Undo removes them", async () => {
+    const { b, sidebar } = await open();
+    const folderId = await sidebar.run({ type: "newFolder", at: { parentId: "1", index: 1 }, title: "New folder" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Mail", "New folder", "Everyday", "Empty"]);
+    expect(typeof folderId).toBe("string");
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Mail", "Everyday", "Empty"]);
+    await sidebar.run({ type: "addBookmark", at: { parentId: "15", index: 0 }, title: "Tab 2", url: "https://example.test/t2" });
+    await settle();
+    expect(titlesIn(b, "15")).toEqual(["Tab 2"]);
+  });
+
+  test("Add current tab bookmarks this window's selected tab", async () => {
+    const { b, sidebar } = await open();
+    b.tabsByWindow.set(1, [tab(1), tab(2, { active: true, title: "Spec", url: "https://spec.test/" })]);
+    await sidebar.run({ type: "addCurrentTab", at: { parentId: "11", index: 2 } });
+    await settle();
+    expect(locate(b.bookmarks, "11")!.node.children![2]).toMatchObject({ title: "Spec", url: "https://spec.test/" });
+  });
+
+  test("Undo reverses only the last edit", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Post", url: "https://example.test/10" });
+    await settle();
+    await sidebar.run({ type: "moveBookmark", id: "15", to: { parentId: "1", index: 0 } });
+    await settle();
+    await sidebar.run({ type: "undo" });
+    await settle();
+    await sidebar.run({ type: "undo" }); // nothing left to undo
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Post", "Everyday", "Empty"]);
+  });
+
+  test("an edit of a bookmark removed elsewhere says so instead of throwing, and leaves nothing to undo", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "moveBookmark", id: "15", to: { parentId: "1", index: 0 } });
+    await settle();
+    // 12 is removed behind the Sidebar's back (another window, Bookmark Manager, sync).
+    const at = locate(b.bookmarks, "12")!;
+    at.siblings.splice(at.index, 1);
+    await expect(sidebar.run({ type: "editBookmark", id: "12", title: "Gone" })).resolves.toBeUndefined();
+    expect(sidebar.notice()).toMatchObject({ text: "Couldn't change it: it changed elsewhere", undo: false });
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Empty", "Mail", "Everyday"]);
+  });
+
+  test("Undo of a delete still works when its folder has fewer items by then", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "removeBookmark", id: "15" }); // Empty, last in the bar (index 2)
+    await settle();
+    const mail = locate(b.bookmarks, "10")!;
+    mail.siblings.splice(mail.index, 1); // the bar shrinks elsewhere
+    b.emit({ kind: "bookmarks" });
+    await settle();
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Everyday", "Empty"]);
+  });
+
+  test("Undo of a new folder never deletes what was put into it since", async () => {
+    const { b, sidebar } = await open();
+    const id = (await sidebar.run({ type: "newFolder", at: { parentId: "1", index: 0 }, title: "New folder" }))!;
+    await settle();
+    await b.moveBookmark("10", { parentId: id, index: 0 }); // from another window
+    await settle();
+    await sidebar.run({ type: "undo" });
+    expect(titlesIn(b, id)).toEqual(["Mail"]);
+    expect(sidebar.notice()).toMatchObject({ text: "Couldn't undo: it changed elsewhere" });
+  });
+
+  test("Undo of a delete restores what Chrome removed, including what the panel hadn't seen yet", async () => {
+    const { b, sidebar } = await open();
+    locate(b.bookmarks, "15")!.node.children!.push(link("60", "Just synced")); // no event yet
+    await sidebar.run({ type: "removeBookmark", id: "15" });
+    await settle();
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(locate(b.bookmarks, "1")!.node.children![2]!.children!.map((n) => n.title)).toEqual(["Just synced"]);
+  });
+
+  test("edits and Undo run in the order given, even while Chrome is slow", async () => {
+    const { b, sidebar } = await open();
+    const id = (await sidebar.run({ type: "newFolder", at: { parentId: "1", index: 0 }, title: "New folder" }))!;
+    await settle();
+    b.writeDelay = 5;
+    const renaming = sidebar.run({ type: "editBookmark", id, title: "Recipes" });
+    const undoing = sidebar.run({ type: "undo" }); // meant for the rename
+    await Promise.all([renaming, undoing]);
+    await settle();
+    expect(titlesIn(b, "1")[0]).toBe("New folder");
+  });
+
+  test("Undo of an edit restores only what that edit changed", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Post", url: "https://example.test/10" });
+    await settle();
+    locate(b.bookmarks, "10")!.node.url = "https://newer.test/"; // Bookmark Manager, meanwhile
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(locate(b.bookmarks, "10")!.node).toMatchObject({ title: "Mail", url: "https://newer.test/" });
+  });
+
+  test("Undo of an edit whose field was changed again elsewhere leaves it and says so", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Post" });
+    await settle();
+    locate(b.bookmarks, "10")!.node.title = "Letters";
+    await sidebar.run({ type: "undo" });
+    expect(locate(b.bookmarks, "10")!.node.title).toBe("Letters");
+    expect(sidebar.notice()).toMatchObject({ text: "Couldn't undo: it changed elsewhere" });
+  });
+
+  test("Undo of something removed elsewhere since says so", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "editBookmark", id: "10", title: "Post" });
+    await settle();
+    const at = locate(b.bookmarks, "10")!;
+    at.siblings.splice(at.index, 1);
+    await sidebar.run({ type: "undo" });
+    expect(sidebar.notice()).toMatchObject({ text: "Couldn't undo: it changed elsewhere", undo: false });
   });
 });
