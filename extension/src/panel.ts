@@ -1,7 +1,7 @@
 // Side panel page: renders the Sidebar's rows and turns clicks and keys into its commands.
 // Rendering only — what rows exist and what a key does live in sidebar.ts.
-import { COLOUR_TREATMENT_KEY, SITE_ICONS_KEY, colourTreatment, siteIcons } from "./settings";
-import { addPlace, dropPlace, iconText, keyResult, siteIconUrls, openSidebar, rowCommand, type DragSource, type DropZone, type KeyResult, type Place, type Row, type Sidebar } from "./sidebar";
+import { COLOUR_TREATMENT_KEY, SITE_ICONS_KEY, SITE_MEMORY_PREFIX, colourTreatment, siteIcons } from "./settings";
+import { FOLDER_COLOURS, addPlace, dropPlace, folderColour, folderIcon, iconText, keyResult, siteIconUrls, openSidebar, rowCommand, type DragSource, type DropZone, type KeyResult, type Place, type Row, type Sidebar } from "./sidebar";
 import { chromeSidebar } from "./sidebar-chrome";
 
 const app = document.getElementById("app")!;
@@ -31,7 +31,9 @@ const host = (url: string) => {
  *  the page's own site (siteFallback below). Our own pages show the extension's icon. */
 const OWN_PAGES = chrome.runtime.getURL("");
 const cached = (url: string) => chrome.runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(url)}&size=32`);
-const img = (src: string, page = "") => `<img class="ico" alt="" src="${esc(src)}"${page && ` data-page="${esc(page)}"`}>`;
+/** `page`: check this page's cached icon (data-page); `siteOf`: a site icon shown for this page. */
+const img = (src: string, page = "", siteOf = "") =>
+  `<img class="ico" alt="" src="${esc(src)}"${page && ` data-page="${esc(page)}"`}${siteOf && ` data-site-of="${esc(siteOf)}"`}>`;
 const originOf = (url: string) => {
   try {
     return new URL(url).origin;
@@ -54,10 +56,43 @@ const favicon = (url: string, fromSite = false) => {
   if (!siteIconsOn || !fromSite) return img(cached(url));
   const isDefault = pageDefault.get(url);
   const found = isDefault ? siteFound.get(originOf(url)) : undefined;
-  return found ? img(found) : img(cached(url), isDefault === undefined ? url : "");
+  return found ? img(found, "", url) : img(cached(url), isDefault === undefined ? url : "");
 };
 
+// What site lookups found, remembered across panel opens (storage.local, one key per site): an
+// icon for 7 days, "none" for 1 day. Opening the panel then makes no lookups; showing a found icon
+// comes from the browser's cache when the site allows caching (most do).
+const SITE_MEMORY = SITE_MEMORY_PREFIX;
+const DAY = 86_400_000;
+interface Remembered {
+  url: string | null;
+  at: number;
+}
+async function recallSites(): Promise<void> {
+  const now = Date.now();
+  const expired: string[] = [];
+  for (const [key, value] of Object.entries(await chrome.storage.local.get(null))) {
+    if (!key.startsWith(SITE_MEMORY)) continue;
+    const { url, at } = value as Remembered;
+    if (now - at < (url ? 7 : 1) * DAY) siteFound.set(key.slice(SITE_MEMORY.length), url);
+    else expired.push(key);
+  }
+  if (expired.length > 0) await chrome.storage.local.remove(expired);
+}
+function rememberSite(origin: string, url: string | null): void {
+  if (url === null && !navigator.onLine) return; // offline isn't "no icon"
+  void chrome.storage.local.set({ [SITE_MEMORY + origin]: { url, at: Date.now() } satisfies Remembered }).catch(report);
+}
+// (Switching site icons off forgets every site: background.ts, so it works with no panel open.)
+const forgetSite = (origin: string) => chrome.storage.local.remove(SITE_MEMORY + origin);
+
 const emoji = (icon: string) => `<span class="emoji" aria-hidden="true">${esc(icon)}</span>`;
+const FOLDER_FILLED = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.6c0-.6.5-1.1 1.1-1.1h3l1.4 1.4h5.4c.6 0 1.1.5 1.1 1.1v5.4c0 .6-.5 1.1-1.1 1.1H3.1c-.6 0-1.1-.5-1.1-1.1z"/></svg>`;
+/** A Bookmark icon: a coloured folder (folder:<colour>) or an emoji. */
+const iconHtml = (icon: string) => {
+  const colour = folderColour(icon);
+  return colour ? `<span class="folder-colour" data-colour="${colour}">${FOLDER_FILLED}</span>` : emoji(icon);
+};
 
 // --- Rows to HTML. ---------------------------------------------------------------------------
 function rowHtml(row: Row): string {
@@ -69,10 +104,10 @@ function rowHtml(row: Row): string {
         ${ICON.chev}<span>${row.label}</span><span class="grow"></span><span class="count">${row.count ?? ""}</span></div>`;
     case "folder":
       return `<div class="row folder" role="treeitem" aria-level="${row.depth + 1}" aria-expanded="${row.open}" style="--depth:${row.depth}" title="${esc(row.title)}" ${attrs}>
-        ${ICON.chev}<span class="ico">${row.icon !== undefined ? emoji(row.icon) : ICON.folder}</span><span class="label">${esc(row.title)}</span><span class="folder-count">${row.count}</span></div>`;
+        ${ICON.chev}<span class="ico">${row.icon !== undefined ? iconHtml(row.icon) : ICON.folder}</span><span class="label">${esc(row.title)}</span><span class="folder-count">${row.count}</span></div>`;
     case "bookmark":
       return `<div class="row bookmark" role="treeitem" aria-level="${row.depth + 1}" style="--depth:${row.depth}" title="${esc(`${row.title}\n${host(row.url)}`)}" ${attrs}>
-        <span class="leaf-pad"></span>${row.icon !== undefined ? `<span class="ico">${emoji(row.icon)}</span>` : favicon(row.url, true)}<span class="label">${esc(row.title)}</span></div>`;
+        <span class="leaf-pad"></span>${row.icon !== undefined ? `<span class="ico">${iconHtml(row.icon)}</span>` : favicon(row.url, true)}<span class="label">${esc(row.title)}</span></div>`;
     case "tab":
       return `<div class="row tab" role="option" aria-selected="${row.active}" title="${esc(`${row.title}\n${host(row.url)}`)}" ${attrs}>
         ${favicon(row.url)}<span class="label">${esc(row.title)}</span>${row.audible ? `<span class="state" title="Playing audio">${ICON.audio}</span>` : ""}
@@ -357,7 +392,7 @@ function openEditor(key: string): void {
   iconButton.title = "Choose icon";
   const showIcon = () => {
     const icon = chosen === undefined ? row.icon : chosen ?? undefined;
-    iconButton.innerHTML = icon !== undefined ? emoji(icon) : defaultIcon;
+    iconButton.innerHTML = icon !== undefined ? iconHtml(icon) : defaultIcon;
   };
   showIcon();
   slot.replaceWith(iconButton);
@@ -376,7 +411,7 @@ function openEditor(key: string): void {
       chosen = icon;
       showIcon();
       closePicker(title);
-    }, () => closePicker(iconButton));
+    }, () => closePicker(iconButton), row.kind === "folder");
     picker.addEventListener("focusout", (ev) => {
       if (!inside(ev.relatedTarget as Node | null)) finish(true, true);
     });
@@ -427,13 +462,27 @@ function openEditor(key: string): void {
 const ICON_CHOICES = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment("⭐📌📁📚📖📝📅📬💬📞👥🏠🏢💼💰🧾📊📈🛒🎵🎬📷🎮🚗🍳☕🏃❤️🔧💡🔒🌐🔥✅🧪🤖🎓🧠📰🗺️")].map((g) => g.segment);
 const SYSTEM_PICKER = /Mac/.test(navigator.platform) ? "⌃⌘Space" : "Win+.";
 
-/** The editor's icon picker: a grid of common emoji, a field for any other (where the system's
- *  emoji picker works), and Default icon. Escape closes it without a choice. */
-function iconPicker(choose: (icon: string | null) => void, cancel: () => void): HTMLElement {
+/** The editor's icon picker: for a folder, a row of folder colours; a grid of common emoji; a
+ *  field for any other emoji (where the system's emoji picker works); and Default icon. Escape
+ *  closes it without a choice. */
+function iconPicker(choose: (icon: string | null) => void, cancel: () => void, forFolder: boolean): HTMLElement {
   const box = document.createElement("div");
   box.className = "icon-picker";
   box.setAttribute("role", "dialog");
   box.setAttribute("aria-label", "Choose icon");
+  if (forFolder) {
+    const colours = document.createElement("div");
+    colours.className = "colour-row";
+    for (const colour of FOLDER_COLOURS) {
+      const b = Object.assign(document.createElement("button"), { type: "button", title: `${colour[0]!.toUpperCase()}${colour.slice(1)} folder` });
+      b.setAttribute("aria-label", b.title);
+      b.dataset.colour = colour;
+      b.innerHTML = iconHtml(folderIcon(colour));
+      b.addEventListener("click", () => choose(folderIcon(colour)));
+      colours.append(b);
+    }
+    box.append(colours);
+  }
   const grid = document.createElement("div");
   grid.className = "icon-grid";
   for (const icon of ICON_CHOICES) {
@@ -636,11 +685,31 @@ function probeSite(page: string): Promise<string | null | undefined> {
     void probe.then((found) => {
       if (found === undefined || round !== probeRound) return;
       siteFound.set(origin, found);
+      rememberSite(origin, found);
       if (found) scheduleRender();
     });
   }
   return probe;
 }
+
+// A remembered site icon that no longer loads is forgotten; the row goes back to Chrome's icon,
+// and the next panel open asks the site again.
+app.addEventListener(
+  "error",
+  (e) => {
+    const image = e.target;
+    if (!(image instanceof HTMLImageElement) || image.dataset.siteOf === undefined) return;
+    const page = image.dataset.siteOf;
+    image.removeAttribute("data-site-of");
+    const origin = originOf(page);
+    if (siteFound.get(origin) === image.getAttribute("src")) {
+      siteFound.set(origin, null); // for this panel's life
+      void forgetSite(origin).catch(report);
+    }
+    image.src = cached(page);
+  },
+  true, // error doesn't bubble
+);
 
 // A page visited since gets its own icon in Chrome's cache: check it again.
 chrome.tabs.onUpdated.addListener((_id, change, tab) => {
@@ -697,6 +766,7 @@ void (async () => {
   const stored = await chrome.storage.local.get([COLOUR_TREATMENT_KEY, SITE_ICONS_KEY]);
   applyTreatment(stored[COLOUR_TREATMENT_KEY]);
   siteIconsOn = siteIcons(stored[SITE_ICONS_KEY]);
+  if (siteIconsOn) await recallSites().catch(report);
   sidebar = await openSidebar(chromeSidebar, scheduleRender);
   render();
 })();

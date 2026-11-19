@@ -14,7 +14,7 @@ A Chrome extension that puts your **bookmarks above the tabs of the current wind
 
 - **Bookmarks** from Chrome's own bookmarks: the bookmarks bar inline, folders that expand, "Other bookmarks" as a folder. Clicking one opens it in this window (⌘/Ctrl-click or middle-click: in the background).
 - **Edit bookmarks in place:** drag to move bookmarks and folders, drag a tab in to save it, and right-click for Edit (title and URL), Delete, New folder and Add current tab. Keys: F2 edit, Delete delete, ⌥↑/⌥↓ move, ⌘/Ctrl+Z undo, Shift+F10 menu. The last edit can be undone from the footer.
-- **Icons:** give any bookmark or folder an emoji in the editor (a grid of common ones, or any emoji through your system's emoji picker). Bookmarks you've never visited get their site's icon (see Privacy).
+- **Icons:** give any bookmark or folder an emoji in the editor (a grid of common ones, or any emoji through your system's emoji picker), or give a folder a colour (Chrome's tab-group colours). Bookmarks you've never visited get their site's icon (see Privacy).
 - **Tabs** of the window the panel sits in, in tab-strip order: click to switch, × or middle-click to close, and a New tab row. Each window has its own independent panel.
 - Both sections fold, and the panel remembers which folders are open.
 - Updates live from Chrome's events; nothing polls.

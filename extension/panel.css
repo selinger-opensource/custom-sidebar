@@ -155,3 +155,29 @@ svg { flex: none; }
   border-radius: 4px; padding: 3px 6px; outline: none;
 }
 .icon-foot input:focus { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+
+/* ---- Folder colours: Chrome's tab-group colours, light and dark ------------------------ */
+:root {
+  --folder-grey: #5f6368; --folder-blue: #1a73e8; --folder-red: #d93025; --folder-yellow: #e8a200;
+  --folder-green: #188038; --folder-pink: #d01884; --folder-purple: #a142f4; --folder-cyan: #007b83; --folder-orange: #fa7b17;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --folder-grey: #dadce0; --folder-blue: #8ab4f8; --folder-red: #f28b82; --folder-yellow: #fdd663;
+    --folder-green: #81c995; --folder-pink: #ff8bcb; --folder-purple: #d7aefb; --folder-cyan: #78d9ec; --folder-orange: #fcad70;
+  }
+}
+.folder-colour { display: grid; place-items: center; }
+.folder-colour svg { fill-opacity: 0.9; }
+.folder-colour[data-colour="grey"] { color: var(--folder-grey); }
+.folder-colour[data-colour="blue"] { color: var(--folder-blue); }
+.folder-colour[data-colour="red"] { color: var(--folder-red); }
+.folder-colour[data-colour="yellow"] { color: var(--folder-yellow); }
+.folder-colour[data-colour="green"] { color: var(--folder-green); }
+.folder-colour[data-colour="pink"] { color: var(--folder-pink); }
+.folder-colour[data-colour="purple"] { color: var(--folder-purple); }
+.folder-colour[data-colour="cyan"] { color: var(--folder-cyan); }
+.folder-colour[data-colour="orange"] { color: var(--folder-orange); }
+.colour-row { display: grid; grid-template-columns: repeat(9, 1fr); gap: 2px; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--divider); }
+.colour-row button { all: unset; height: 26px; border-radius: 6px; display: grid; place-items: center; }
+.colour-row button:hover, .colour-row button:focus-visible { background: var(--hover); box-shadow: inset 0 0 0 2px var(--focus); }

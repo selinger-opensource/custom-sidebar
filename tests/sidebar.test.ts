@@ -3,6 +3,7 @@ import {
   NO_FOLDING,
   addPlace,
   dropPlace,
+  folderColour,
   iconText,
   siteIconUrls,
   keyResult,
@@ -933,5 +934,26 @@ describe("Bookmark icons", () => {
     await sidebar.run({ type: "undo" });
     expect(b.icons).toEqual({ "10": "✉️" });
     expect(sidebar.notice()).toMatchObject({ text: "Couldn't undo: it changed elsewhere" });
+  });
+});
+
+describe("folder colours", () => {
+  test("a folder colour is a Bookmark icon of the form folder:<colour>, one of Chrome's tab-group colours", () => {
+    expect(folderColour("folder:blue")).toBe("blue");
+    expect(folderColour("folder:grey")).toBe("grey");
+    expect(folderColour("folder:mauve")).toBeUndefined();
+    expect(folderColour("📁")).toBeUndefined();
+    expect(folderColour(undefined)).toBeUndefined();
+  });
+
+  test("a folder colour is set, undone and synced like any icon", async () => {
+    const b = new FakeBrowser();
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "editBookmark", id: "11", title: "Everyday", icon: "folder:green" });
+    await settle();
+    expect(sidebar.rows().find((r) => r.key === "b:11")).toMatchObject({ icon: "folder:green" });
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(b.icons).toEqual({});
   });
 });

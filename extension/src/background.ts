@@ -2,7 +2,7 @@
 // icon (and its keyboard shortcut) toggle the Sidebar. Event wiring only; the sweep's behavior
 // lives in sweep.ts, the Sidebar's in sidebar.ts.
 import { LAST_USE_KEY, chromeBrowser } from "./chrome-browser";
-import { SWEEP_ENABLED_KEY, sweepEnabled, sweepSwitchedOn } from "./settings";
+import { SITE_ICONS_KEY, SITE_MEMORY_PREFIX, SWEEP_ENABLED_KEY, siteIcons, sweepEnabled, sweepSwitchedOn } from "./settings";
 import { isSweepDue, runSweep, type Browser, type LastUseRecords, type SweepReceipt } from "./sweep";
 
 const ALARM = "sweep-check";
@@ -156,6 +156,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && enabled && sweepSwitchedOn(enabled.oldValue, enabled.newValue)) {
     void sweepSerial(() => chrome.storage.local.set({ lastSweepAt: Date.now() }));
   }
+});
+
+// Site icons switched off, however and whether or not a panel is open: forget every looked-up site.
+chrome.storage.onChanged.addListener((changes, area) => {
+  const icons = changes[SITE_ICONS_KEY];
+  if (area !== "local" || !icons || siteIcons(icons.newValue)) return;
+  void chrome.storage.local.get(null).then((all) => {
+    const keys = Object.keys(all).filter((k) => k.startsWith(SITE_MEMORY_PREFIX));
+    return keys.length > 0 ? chrome.storage.local.remove(keys) : undefined;
+  });
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {

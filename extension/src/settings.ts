@@ -28,3 +28,6 @@ export const sweepSwitchedOn = (oldValue: unknown, newValue: unknown): boolean =
  *  icon). On unless switched off. */
 export const SITE_ICONS_KEY = "siteIcons";
 export const siteIcons = (stored: unknown): boolean => stored !== false;
+
+/** What site-icon lookups found, one storage key per site (`siteIcon:<origin>`). */
+export const SITE_MEMORY_PREFIX = "siteIcon:";

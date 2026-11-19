@@ -49,6 +49,17 @@ const applyIcons = (icons: BookmarkIcons, changes: IconChanges): BookmarkIcons =
   return next;
 };
 
+/** Folder colours: Chrome's tab-group colours. A folder's Bookmark icon `folder:<colour>` shows
+ *  the plain folder icon in that colour. */
+export const FOLDER_COLOURS = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"] as const;
+export type FolderColour = (typeof FOLDER_COLOURS)[number];
+export const folderIcon = (colour: FolderColour) => `folder:${colour}`;
+/** The colour of a folder-colour icon, or undefined for an emoji (or nothing). */
+export function folderColour(icon: string | undefined): FolderColour | undefined {
+  const name = icon?.startsWith("folder:") ? icon.slice("folder:".length) : undefined;
+  return FOLDER_COLOURS.find((c) => c === name);
+}
+
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 /** A Bookmark icon from what someone typed or pasted: its first character (an emoji sequence
  *  such as 👩‍💻 or 🇩🇪 counts as one), or undefined when there's nothing. */
