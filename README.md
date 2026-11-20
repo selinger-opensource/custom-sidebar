@@ -4,8 +4,6 @@
 
 On a laptop, Chrome's vertical tabs plus its bookmarks panel take about 600 px of the screen. Custom Sidebar puts both into a single side panel at Chrome's minimum width, with drag-and-drop bookmark editing, emoji and colour icons, your tab groups as on the tab strip, and a one-click Tidy for tabs. It runs entirely on your machine: no account, no analytics, and out of the box no network requests at all.
 
-*Screenshots use invented bookmarks and pages.*
-
 ## Features
 
 **Bookmarks**
