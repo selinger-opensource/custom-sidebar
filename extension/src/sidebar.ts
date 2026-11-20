@@ -115,7 +115,7 @@ export function siteIconUrls(pageUrl: string): string[] {
 export type Row =
   /** `tidy` (Tabs only): how many tabs Tidy would close. `groups` (Tabs only, when the window has
    *  any): how many group headers, and how many of them are expanded. */
-  | { kind: "section"; key: string; section: Section; label: string; open: boolean; count?: number; barId?: string; tidy?: number; groups?: { total: number; open: number } }
+  | { kind: "section"; key: string; section: Section; label: string; open: boolean; count?: number; barId?: string; tidy?: number; groups?: { total: number; open: number }; folders?: { total: number; open: number } }
   | ({ kind: "folder"; key: string; id: string; title: string; depth: number; open: boolean; count: number; parent?: string; icon?: string } & Placed)
   | ({ kind: "bookmark"; key: string; id: string; title: string; url: string; depth: number; parent?: string; savedTitle: string; icon?: string } & Placed)
   /** A Group header (GLOSSARY.md): `open` is Chrome's own expanded state; `selected`: the
@@ -228,6 +228,8 @@ export type Command =
   | { type: "toggleGroup"; id: number; open: boolean }
   /** Expand every group of the window, or collapse every one. */
   | { type: "foldGroups"; open: boolean }
+  /** Expand (every folder that has bookmarks, nested ones too) or collapse all Bookmark folders. */
+  | { type: "foldFolders"; open: boolean }
   | { type: "editGroup"; id: number; title: string; colour?: FolderColour }
   | { type: "newTabInGroup"; id: number }
   | { type: "moveGroupToNewWindow"; id: number }
@@ -309,6 +311,11 @@ function bookmarkRows(nodes: Rooted[], depth: number, expanded: Set<string>, ico
   return rows;
 }
 
+/** Every folder with something inside, at any depth: what "expand all" opens. */
+function folderIds(nodes: BookmarkNode[]): string[] {
+  return nodes.flatMap((n) => (n.url === undefined && (n.children?.length ?? 0) > 0 ? [n.id, ...folderIds(n.children ?? [])] : []));
+}
+
 const tabRow = (t: TabInfo, group?: TabGroupInfo): Row => ({
   kind: "tab",
   key: `t:${t.id}`,
@@ -359,8 +366,17 @@ export function sidebarRows(tree: BookmarkNode[], tabs: TabInfo[], folding: Fold
     ...(count !== undefined && { count }),
   });
   const barId = tree[0]?.children?.find((n) => n.folderType === "bookmarks-bar")?.id;
-  const rows: Row[] = [{ ...head("bookmarks"), ...(barId !== undefined && { barId }) }];
-  if (!folded.has("bookmarks")) rows.push(...bookmarkRows(bookmarkRoots(tree), 0, new Set(folding.expanded), icons));
+  const roots = bookmarkRoots(tree);
+  const folderList = folderIds(roots.map((r) => r.node));
+  const expandedNow = new Set(folding.expanded);
+  const rows: Row[] = [
+    {
+      ...head("bookmarks"),
+      ...(barId !== undefined && { barId }),
+      ...(folderList.length > 0 && { folders: { total: folderList.length, open: folderList.filter((id) => expandedNow.has(id)).length } }),
+    },
+  ];
+  if (!folded.has("bookmarks")) rows.push(...bookmarkRows(roots, 0, expandedNow, icons));
   const strip = tabRows(tabs, groups);
   const headers = strip.filter((r) => r.kind === "group");
   rows.push({
@@ -1139,6 +1155,8 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
         }
         case "toggleGroup":
           return void (await setCollapsed([command.id], !command.open));
+        case "foldFolders":
+          return void (await refold({ ...folding, expanded: command.open ? folderIds(bookmarkRoots(tree).map((r) => r.node)) : [] }));
         case "foldGroups":
           return void (await setCollapsed((await browser.tabGroups(windowId)).map((g) => g.id), !command.open));
         case "editGroup":

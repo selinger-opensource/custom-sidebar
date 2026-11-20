@@ -78,6 +78,7 @@ Then load `dist/extension` at `chrome://extensions` (**Developer mode** → **Lo
 | Close a tab | × or middle-click | Delete or Backspace |
 | Pin, mute, group, move, duplicate, reload, split, close others/below, bookmark or copy a tab | right-click the tab | Shift+F10 (or the menu key) |
 | Expand or collapse a group | click its pill | Enter, Space or → / ← |
+| Expand or collapse all bookmark folders | the button on the Bookmarks heading | Tab to it, then Space |
 | Expand or collapse all groups | the button beside the broom | Tab to it, then Space |
 | Rename or recolour a group | right-click → Name and colour… | F2 |
 | A group's other commands (new tab, move, save, close, ungroup, delete) | right-click the group | Shift+F10 |

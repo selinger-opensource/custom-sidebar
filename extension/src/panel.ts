@@ -110,6 +110,14 @@ const groupsButton = (groups: { total: number; open: number } | undefined) => {
   const label = expand ? "Expand all groups" : "Collapse all groups";
   return `<button class="icon-btn tidy" data-groups="${expand ? "expand" : "collapse"}" aria-label="${label}" title="${label}">${expand ? ICON.unfold : ICON.fold}</button>`;
 };
+/** Expand or collapse every Bookmark folder, on the Bookmarks heading: collapses while any is
+ *  expanded, else expands. */
+const foldersButton = (folders: { total: number; open: number } | undefined) => {
+  if (!folders) return "";
+  const expand = folders.open === 0;
+  const label = expand ? "Expand all folders" : "Collapse all folders";
+  return `<button class="icon-btn tidy" data-folders="${expand ? "expand" : "collapse"}" aria-label="${label}" title="${label}">${expand ? ICON.unfold : ICON.fold}</button>`;
+};
 const emoji = (icon: string) => `<span class="emoji" aria-hidden="true">${esc(icon)}</span>`;
 const FOLDER_FILLED = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.6c0-.6.5-1.1 1.1-1.1h3l1.4 1.4h5.4c.6 0 1.1.5 1.1 1.1v5.4c0 .6-.5 1.1-1.1 1.1H3.1c-.6 0-1.1-.5-1.1-1.1z"/></svg>`;
 /** A Bookmark icon: a coloured folder (folder:<colour>) or an emoji. */
@@ -125,7 +133,7 @@ function rowHtml(row: Row): string {
   switch (row.kind) {
     case "section":
       return `<div class="section-head${row.section === "tabs" ? " sticky" : ""}" role="button" aria-expanded="${row.open}" ${attrs}>
-        ${ICON.chev}<span>${row.label}</span><span class="grow"></span>${groupsButton(row.groups)}${tidyButton(row.tidy ?? 0)}<span class="count">${row.count ?? ""}</span></div>`;
+        ${ICON.chev}<span>${row.label}</span><span class="grow"></span>${foldersButton(row.folders)}${groupsButton(row.groups)}${tidyButton(row.tidy ?? 0)}<span class="count">${row.count ?? ""}</span></div>`;
     case "group": {
       // A coloured pill, as on Chrome's tab strip; an untitled one shows no name, just its count.
       const name = row.title || "Unnamed group";
@@ -244,6 +252,11 @@ app.addEventListener("click", (e) => {
   if (e.target instanceof Element && e.target.closest("[data-tidy]")) {
     e.stopPropagation();
     return void sidebar.run({ type: "tidy" }).catch(report);
+  }
+  const folders = e.target instanceof Element ? e.target.closest<HTMLElement>("[data-folders]") : null;
+  if (folders) {
+    e.stopPropagation();
+    return void sidebar.run({ type: "foldFolders", open: folders.dataset.folders === "expand" }).catch(report);
   }
   const groups = e.target instanceof Element ? e.target.closest<HTMLElement>("[data-groups]") : null;
   if (groups) {

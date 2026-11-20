@@ -627,6 +627,24 @@ describe("openSidebar", () => {
     expect(browser.stored).toEqual(folding({ expanded: [], folded: [] }));
   });
 
+  test("the Bookmarks heading counts the folders that have bookmarks and how many are expanded", () => {
+    const rows = (f: Folding) => sidebarRows(tree({ bar: BAR }), [tab(1)], f).find((r) => r.key === "s:bookmarks");
+    expect(rows(NO_FOLDING)).toMatchObject({ folders: { total: 2, open: 0 } });
+    expect(rows(folding({ expanded: ["11"] }))).toMatchObject({ folders: { total: 2, open: 1 } });
+    expect(sidebarRows(tree({ bar: [link("10", "Mail")] }), [], NO_FOLDING).find((r) => r.key === "s:bookmarks")).not.toHaveProperty("folders");
+  });
+
+  test("expand all opens every folder that has bookmarks, nested ones too; collapse all closes them", async () => {
+    const browser = new FakeBrowser();
+    const sidebar = await openSidebar(browser, () => {});
+    await sidebar.run({ type: "foldFolders", open: true });
+    expect([...browser.stored!.expanded].sort()).toEqual(["11", "13"]);
+    expect(keys(sidebar.rows())).toContain("b:14");
+    await sidebar.run({ type: "foldFolders", open: false });
+    expect(browser.stored!.expanded).toEqual([]);
+    expect(keys(sidebar.rows())).not.toContain("b:12");
+  });
+
   test("folding changed by another window's Sidebar is picked up", async () => {
     const browser = new FakeBrowser();
     const sidebar = await openSidebar(browser, () => {});
