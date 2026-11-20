@@ -10,7 +10,11 @@ First release of Custom Sidebar, a fork of Compact Sidebar 0.6.0 by MF Consultin
 - **Save a group as bookmarks** by dragging its pill into Bookmarks: one folder named and coloured after the group.
 - **Tab menu** (right-click a tab): pin/unpin, new tab below, add to or remove from a group, move to a window, reload, duplicate, mute, split view (Chrome 155+), close other tabs and tabs below, bookmark tab, bookmark all tabs, copy link.
 - **Folder menu**: Open All, in a new window, in an incognito window, and in a new tab group.
-- **Expand/collapse all** buttons on the Bookmarks and Tabs headings.
+- **Move tabs and groups** by dragging among the tabs, as on Chrome's tab strip, or with Alt+Up/Down.
+- **Sort by name** on any editable bookmark folder and on the Bookmarks heading, as in Chrome's bookmark manager (with Undo).
+- **Expand all, level by level**: the Bookmarks heading expands the top-level folders; a folder with subfolders gets its own button. An "Every level" option and a per-folder "Don't expand with Expand all" mark. Collapse all but the selected tab's group on the Tabs heading.
+- **New bookmarks go first or last** in a folder (an option) when the panel picks the spot.
+- **Backup**: export and import your icons, Expand all marks, settings and folding from the options page.
 - **Rename on build**: `pnpm rename "My Sidebar"` sets the extension name; the default is Custom Sidebar.
 
 ### Changed

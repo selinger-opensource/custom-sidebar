@@ -11,16 +11,26 @@ import {
   openSidebar,
   rowCommand,
   canSplitWith,
+  groupStep,
   openAllUrls,
   selectionAfterCollapse,
+  stripDrop,
+  tabStep,
   uniqueGroupTitle,
   sidebarRows,
+  sortable,
+  sortedByName,
+  expandTargets,
+  foldersBelow,
+  foldState,
   type BookmarkNode,
   type Folding,
   type Place,
   type Row,
   type SidebarBrowser,
   type ReopenedTab,
+  type DragSource,
+  type DropZone,
   type SidebarEvent,
   type TabGroupInfo,
   type TabInfo,
@@ -69,7 +79,8 @@ describe("sidebarRows", () => {
   test("bookmarks bar inline, then this window's tabs and a New tab row", () => {
     const rows = sidebarRows(tree({ bar: BAR }), [tab(1, { active: true }), tab(2)], NO_FOLDING);
     expect(keys(rows)).toEqual(["s:bookmarks", "b:10", "b:11", "b:15", "s:tabs", "t:1", "t:2", "newtab"]);
-    expect(rows.find((r) => r.key === "s:tabs")).toMatchObject({ kind: "section", count: 2, open: true });
+    expect(rows.find((r) => r.key === "s:tabs")).toMatchObject({ kind: "section", count: 1, total: 2, open: true });
+    expect(rows[0]).toMatchObject({ barId: "1", barCount: 3 });
     expect(rows.find((r) => r.key === "b:11")).toMatchObject({ kind: "folder", depth: 0, open: false, count: 2 });
   });
 
@@ -292,15 +303,102 @@ describe("dropPlace", () => {
     expect(dropPlace(rows, { kind: "tab", id: 1 }, "b:2", "inside")).toEqual({ parentId: "2", index: 1 });
     expect(dropPlace(rows, { kind: "tab", id: 1 }, "t:1", "after")).toBeUndefined();
   });
+
+  test("New bookmarks go: a tab inside a folder or on the heading goes last by default, first at the top; between bookmarks, where pointed", () => {
+    const t = { kind: "tab" as const, id: 1 };
+    expect(dropPlace(rows, t, "b:11", "inside")).toEqual({ parentId: "11", index: 2 });
+    expect(dropPlace(rows, t, "s:bookmarks", "after")).toEqual({ parentId: "1", index: 3 });
+    expect(dropPlace(rows, t, "b:11", "inside", "top")).toEqual({ parentId: "11", index: 0 });
+    expect(dropPlace(rows, t, "b:2", "inside", "top")).toEqual({ parentId: "2", index: 0 });
+    expect(dropPlace(rows, t, "s:bookmarks", "after", "top")).toEqual({ parentId: "1", index: 0 });
+    for (const newAt of ["top", "bottom"] as const) {
+      expect(dropPlace(rows, t, "b:12", "before", newAt)).toEqual({ parentId: "11", index: 0 });
+      expect(dropPlace(rows, t, "b:12", "after", newAt)).toEqual({ parentId: "11", index: 1 });
+      expect(dropPlace(rows, t, "b:11", "after", newAt)).toEqual({ parentId: "11", index: 0 }); // an open folder's first slot
+    }
+  });
+
+  test("moving a bookmark ignores New bookmarks go: last inside a folder, first on the heading", () => {
+    expect(dropPlace(rows, mark("b:10"), "b:11", "inside", "top")).toEqual({ parentId: "11", index: 2 });
+    expect(dropPlace(rows, mark("b:15"), "s:bookmarks", "after", "bottom")).toEqual({ parentId: "1", index: 0 });
+  });
+});
+
+describe("Expand all", () => {
+  // A (A1 (A1a (x)), A2 (y)), B (z), E (empty), a bookmark
+  const top = [
+    folder("1", "A", [folder("2", "A1", [folder("3", "A1a", [link("31", "x")])]), folder("4", "A2", [link("41", "y")])]),
+    folder("5", "B", [link("51", "z")]),
+    folder("6", "E", []),
+    link("7", "loose"),
+  ];
+  const none = new Set<string>();
+  test("which folders a button opens: one level, or every level; never empty or marked ones, nor inside marked ones", () => {
+    expect(expandTargets(top, none, "level")).toEqual(["1", "5"]);
+    expect(expandTargets(top, none, "every")).toEqual(["1", "2", "3", "4", "5"]);
+    expect(expandTargets(top, new Set(["2"]), "every")).toEqual(["1", "4", "5"]);
+    expect(expandTargets(top, new Set(["1"]), "level")).toEqual(["5"]);
+  });
+  test("collapse closes every folder below, marked and empty ones included", () => {
+    expect(foldersBelow(top)).toEqual(["1", "2", "3", "4", "5", "6"]);
+  });
+  test("the button's state: expand while hidden or something it opens is closed; else collapse while anything below is open", () => {
+    expect(foldState(top, false, new Set(["1", "5"]), none, "level")).toBe("expand");
+    expect(foldState(top, true, new Set(["1"]), none, "level")).toBe("expand");
+    expect(foldState(top, true, new Set(["1", "5"]), none, "level")).toBe("collapse");
+    expect(foldState(top, true, new Set(["1", "5"]), none, "every")).toBe("expand");
+    expect(foldState(top, true, new Set(["1", "4", "5"]), new Set(["2"]), "every")).toBe("collapse");
+    expect(foldState(top, true, new Set(), new Set(["1", "5"]), "level")).toBe("expand"); // nothing to open or close
+    expect(foldState(top, true, new Set(["2"]), new Set(["1", "5"]), "level")).toBe("collapse");
+  });
+  test("keys: Shift+→ / Shift+← run the row's button (or the heading's); * opens the row's siblings, as WAI-ARIA trees do", () => {
+    const rows = sidebarRows(tree({ bar: BAR }), [], folding({ expanded: ["11"] }));
+    expect(keyResult(rows, "b:11", "ArrowRight", { shift: true })).toEqual({ command: { type: "foldFolders", open: true, id: "11" } });
+    expect(keyResult(rows, "b:11", "ArrowLeft", { shift: true })).toEqual({ command: { type: "foldFolders", open: false, id: "11" } });
+    expect(keyResult(rows, "s:bookmarks", "ArrowLeft", { shift: true })).toEqual({ command: { type: "foldFolders", open: false } });
+    expect(keyResult(rows, "b:15", "ArrowRight", { shift: true })).toEqual({}); // no subfolders: no button
+    expect(keyResult(rows, "b:12", "*", { shift: true })).toEqual({ command: { type: "foldFolders", open: true, id: "11" } });
+    expect(keyResult(rows, "b:10", "*")).toEqual({ command: { type: "foldFolders", open: true } });
+    expect(keyResult(rows, "t:1", "*")).toEqual({});
+  });
+});
+
+describe("Sort by name", () => {
+  test("folders first, then bookmarks, each by title in locale order (case and accents as tie-breaks); untitled first; ties stay", () => {
+    const kids = [link("1", "b"), link("2", ""), folder("3", "Zeta", []), link("4", "B"), link("5", "a"), folder("6", "alpha", []), link("7", "b")];
+    expect(sortedByName(kids)).toEqual(["6", "3", "2", "5", "1", "7", "4"]);
+  });
+  test("offered on editable and root folders and the bar with two or more children; not managed ones", () => {
+    const rows = sidebarRows(
+      tree({ bar: [...BAR, { id: "50", title: "Work", unmodifiable: "managed", children: [link("51", "a"), link("52", "b")] }], other: [link("20", "x"), link("21", "y")] }),
+      [],
+      NO_FOLDING,
+    );
+    const at = (key: string) => rows.find((r) => r.key === key);
+    expect(sortable(at("b:11"))).toBe(true);
+    expect(sortable(at("b:2"))).toBe(true);
+    expect(sortable(at("s:bookmarks"))).toBe(true);
+    expect(sortable(at("b:13"))).toBe(false); // hidden (Everyday is closed)
+    expect(sortable(at("b:15"))).toBe(false); // empty
+    expect(sortable(at("b:50"))).toBe(false);
+    expect(sortable(at("b:10"))).toBe(false);
+    expect(sortable(at("s:tabs"))).toBe(false);
+  });
 });
 
 describe("addPlace (the menu's New folder and Add current tab)", () => {
   const rows = sidebarRows(tree({ bar: BAR, other: [link("20", "Recipes")] }), [tab(1)], folding({ expanded: ["11"] }));
-  test("after a bookmark; at the end inside a folder or root folder; first in the bar from the heading", () => {
+  test("right after a bookmark; inside a folder, a root folder or the bar (the heading) last, by default", () => {
     expect(addPlace(rows, "b:12")).toEqual({ parentId: "11", index: 1 });
     expect(addPlace(rows, "b:11")).toEqual({ parentId: "11", index: 2 });
     expect(addPlace(rows, "b:2")).toEqual({ parentId: "2", index: 1 });
-    expect(addPlace(rows, "s:bookmarks")).toEqual({ parentId: "1", index: 0 });
+    expect(addPlace(rows, "s:bookmarks")).toEqual({ parentId: "1", index: 3 });
+  });
+  test("New bookmarks go at the top: first inside a folder, a root folder or the bar; still right after a bookmark", () => {
+    expect(addPlace(rows, "b:12", "top")).toEqual({ parentId: "11", index: 1 });
+    expect(addPlace(rows, "b:11", "top")).toEqual({ parentId: "11", index: 0 });
+    expect(addPlace(rows, "b:2", "top")).toEqual({ parentId: "2", index: 0 });
+    expect(addPlace(rows, "s:bookmarks", "top")).toEqual({ parentId: "1", index: 0 });
   });
   test("nowhere from tabs or inside a locked folder", () => {
     expect(addPlace(rows, "t:1")).toBeUndefined();
@@ -353,6 +451,16 @@ class FakeBrowser implements SidebarBrowser {
   }
   async saveFolding(f: Folding) {
     this.stored = f;
+  }
+  skips: string[] = [];
+  async loadSkips() {
+    return [...this.skips];
+  }
+  async saveSkips(changes: Record<string, boolean>) {
+    const next = new Set(this.skips);
+    for (const [id, on] of Object.entries(changes)) on ? next.add(id) : next.delete(id);
+    this.skips = [...next];
+    this.calls.push(`skips ${Object.entries(changes).map(([id, on]) => `${id}=${on}`).join(" ")}`);
   }
   icons: Record<string, string> | undefined;
   /** Makes the next icon write fail (storage refusing); `failIconWriteNumber` picks a later one. */
@@ -449,6 +557,41 @@ class FakeBrowser implements SidebarBrowser {
   async unsplit(id: number) {
     this.calls.push(`unsplit ${id}`);
   }
+  // Strip moves, with Chrome's rules where the session relies on them: group-into keeps a tab
+  // beside the group in place (else puts it last in the group), ungroup keeps an edge tab in place
+  // (a middle one goes just after the group), a move puts the first tab at `index`.
+  private strip1() {
+    return this.tabsByWindow.get(1)!;
+  }
+  async moveTabs(ids: number[], index: number) {
+    this.calls.push(`move ${ids.join(",")} to ${index}`);
+    const list = this.strip1();
+    const moving = list.filter((t) => ids.includes(t.id));
+    const rest = list.filter((t) => !ids.includes(t.id));
+    rest.splice(index, 0, ...moving.map(({ splitViewId: _, ...t }) => t)); // any move ends a Split View
+    this.tabsByWindow.set(1, rest);
+  }
+  async moveGroup(id: number, index: number) {
+    this.calls.push(`move group ${id} to ${index}`);
+    const list = this.strip1();
+    const block = list.filter((t) => t.groupId === id);
+    const rest = list.filter((t) => t.groupId !== id);
+    rest.splice(index, 0, ...block);
+    this.tabsByWindow.set(1, rest);
+  }
+  async groupInto(ids: number[], groupId: number) {
+    this.calls.push(`group ${ids.join(",")} into ${groupId}`);
+    const list = this.strip1();
+    const moving = list.filter((t) => ids.includes(t.id));
+    const rest = list.filter((t) => !ids.includes(t.id));
+    const first = rest.findIndex((t) => t.groupId === groupId);
+    const last = rest.map((t) => t.groupId).lastIndexOf(groupId);
+    const from = list.indexOf(moving[0]!);
+    const beside = list[from - 1]?.groupId === groupId || list[from + moving.length]?.groupId === groupId;
+    const at = beside ? (list[from - 1]?.groupId === groupId ? last + 1 : first) : last + 1;
+    rest.splice(at, 0, ...moving.map((t) => ({ ...t, groupId })));
+    this.tabsByWindow.set(1, rest);
+  }
   async openTabs(windowId: number, urls: string[]) {
     this.calls.push(`open tabs ${windowId} ${urls.join(" ")}`);
     return urls.map(() => this.nextTab++);
@@ -496,7 +639,17 @@ class FakeBrowser implements SidebarBrowser {
   }
   async ungroupTabs(ids: number[]) {
     this.calls.push(`ungroup ${ids.join(",")}`);
-    for (const list of this.tabsByWindow.values()) for (const t of list) if (ids.includes(t.id)) t.groupId = NO_GROUP;
+    for (const [w, list] of this.tabsByWindow) {
+      const moving = list.filter((t) => ids.includes(t.id));
+      if (moving.length === 0) continue;
+      const g = moving[0]!.groupId;
+      const from = list.indexOf(moving[0]!);
+      const edge = list[from - 1]?.groupId !== g || list[from + moving.length]?.groupId !== g;
+      const rest = list.filter((t) => !ids.includes(t.id));
+      const at = edge ? from : rest.map((t) => t.groupId).lastIndexOf(g) + 1;
+      rest.splice(at, 0, ...moving.map((t) => ({ ...t, groupId: NO_GROUP })));
+      this.tabsByWindow.set(w, rest);
+    }
   }
   // Bookmark writes, with chrome.bookmarks' rules: `index` is a slot in the folder as it is now,
   // and a move within one folder to a later slot lands one earlier (its old slot is gone).
@@ -627,22 +780,82 @@ describe("openSidebar", () => {
     expect(browser.stored).toEqual(folding({ expanded: [], folded: [] }));
   });
 
-  test("the Bookmarks heading counts the folders that have bookmarks and how many are expanded", () => {
-    const rows = (f: Folding) => sidebarRows(tree({ bar: BAR }), [tab(1)], f).find((r) => r.key === "s:bookmarks");
-    expect(rows(NO_FOLDING)).toMatchObject({ folders: { total: 2, open: 0 } });
-    expect(rows(folding({ expanded: ["11"] }))).toMatchObject({ folders: { total: 2, open: 1 } });
-    expect(sidebarRows(tree({ bar: [link("10", "Mail")] }), [], NO_FOLDING).find((r) => r.key === "s:bookmarks")).not.toHaveProperty("folders");
+  test("Expand all: the heading opens the top level, a folder's button its subfolders; collapse closes everything below", async () => {
+    const b = new FakeBrowser(); // bar: Mail, Everyday (Chat, Deep (Deeper)), Empty
+    const sidebar = await openSidebar(b, () => {});
+    const head = () => sidebar.rows().find((r) => r.key === "s:bookmarks");
+    const row = (id: string) => sidebar.rows().find((r) => r.key === `b:${id}`);
+    expect(head()).toMatchObject({ folders: "expand" });
+    expect(row("11")).toMatchObject({ fold: "expand" });
+    expect(row("15")).not.toHaveProperty("fold"); // no subfolders
+    await sidebar.run({ type: "foldFolders", open: true });
+    expect(b.stored!.expanded).toEqual(["11"]); // Empty has nothing to show
+    expect(head()).toMatchObject({ folders: "collapse" });
+    expect(row("11")).toMatchObject({ fold: "expand" });
+    await sidebar.run({ type: "foldFolders", open: true, id: "11" });
+    expect(b.stored!.expanded).toEqual(["11", "13"]);
+    expect(row("11")).toMatchObject({ fold: "collapse" });
+    await sidebar.run({ type: "foldFolders", open: false, id: "11" });
+    expect(b.stored!.expanded).toEqual(["11"]); // the folder itself stays open
+    await sidebar.run({ type: "foldFolders", open: true, id: "11" });
+    await sidebar.run({ type: "foldFolders", open: false });
+    expect(b.stored!.expanded).toEqual([]);
+    expect(keys(sidebar.rows())).not.toContain("b:12");
   });
 
-  test("expand all opens every folder that has bookmarks, nested ones too; collapse all closes them", async () => {
-    const browser = new FakeBrowser();
-    const sidebar = await openSidebar(browser, () => {});
+  test("a closed folder's button opens it too; the heading's unfolds Bookmarks", async () => {
+    const b = new FakeBrowser();
+    b.stored = folding({ folded: ["bookmarks"] });
+    const sidebar = await openSidebar(b, () => {});
+    expect(sidebar.rows()[0]).toMatchObject({ folders: "expand" });
     await sidebar.run({ type: "foldFolders", open: true });
-    expect([...browser.stored!.expanded].sort()).toEqual(["11", "13"]);
-    expect(keys(sidebar.rows())).toContain("b:14");
+    expect(b.stored).toEqual({ expanded: ["11"], folded: [] });
     await sidebar.run({ type: "foldFolders", open: false });
-    expect(browser.stored!.expanded).toEqual([]);
-    expect(keys(sidebar.rows())).not.toContain("b:12");
+    await sidebar.run({ type: "foldFolders", open: true, id: "11" });
+    expect(b.stored!.expanded).toEqual(["11", "13"]);
+  });
+
+  test("Every level: buttons open every folder below; marked folders are skipped and not entered, yet open by hand and close with collapse", async () => {
+    const b = new FakeBrowser();
+    b.bookmarks = structuredClone(tree({ bar: [folder("20", "A", [folder("21", "A1", [folder("22", "A1a", [link("23", "x")])]), folder("24", "A2", [link("25", "y")])])] }));
+    const sidebar = await openSidebar(b, () => {});
+    sidebar.setExpandAll("every");
+    await sidebar.run({ type: "foldFolders", open: true });
+    expect(b.stored!.expanded).toEqual(["20", "21", "22", "24"]);
+    await sidebar.run({ type: "foldFolders", open: false });
+    await sidebar.run({ type: "skipFolder", id: "21", skip: true });
+    expect(b.skips).toEqual(["21"]);
+    expect(sidebar.rows().find((r) => r.key === "b:20")).toMatchObject({ kind: "folder" });
+    await sidebar.run({ type: "foldFolders", open: true });
+    expect(b.stored!.expanded).toEqual(["20", "24"]);
+    expect(sidebar.rows().find((r) => r.key === "b:21")).toMatchObject({ skip: true, open: false });
+    expect(sidebar.rows().find((r) => r.key === "s:bookmarks")).toMatchObject({ folders: "collapse" }); // nothing left it would open
+    await sidebar.run({ type: "toggleFolder", id: "21", open: true });
+    expect(b.stored!.expanded).toContain("21");
+    await sidebar.run({ type: "foldFolders", open: false, id: "20" });
+    expect(b.stored!.expanded).toEqual(["20"]);
+    sidebar.setExpandAll("level");
+    await sidebar.run({ type: "foldFolders", open: true, id: "20" });
+    expect(b.stored!.expanded).toEqual(["20", "24"]);
+    await sidebar.run({ type: "skipFolder", id: "21", skip: false });
+    expect(b.skips).toEqual([]);
+  });
+
+  test("marks set elsewhere are picked up; a deleted folder's mark goes, and Undo brings it back on the new folder", async () => {
+    const b = new FakeBrowser();
+    b.skips = ["13"];
+    const sidebar = await openSidebar(b, () => {});
+    b.emit({ kind: "skips", changes: { "11": true } });
+    await settle();
+    expect(sidebar.rows().find((r) => r.key === "b:11")).toMatchObject({ skip: true });
+    await sidebar.run({ type: "removeBookmark", id: "11" });
+    await settle();
+    expect(b.skips).toEqual([]);
+    await sidebar.run({ type: "undo" });
+    await settle();
+    const everyday = locate(b.bookmarks, "1")!.node.children!.find((n) => n.title === "Everyday")!;
+    const deep = everyday.children!.find((n) => n.title === "Deep")!;
+    expect([...b.skips].sort()).toEqual([everyday.id, deep.id].sort());
   });
 
   test("folding changed by another window's Sidebar is picked up", async () => {
@@ -734,6 +947,39 @@ describe("Bookmark edits", () => {
     await settle();
     expect(titlesIn(b, "11")).toEqual(["Chat", "Deep"]);
     expect(titlesIn(b, "1")).toEqual(["Mail", "Everyday", "Empty"]);
+  });
+
+  test("Sort by name: one edit, folders first, locale order; Undo restores the old order", async () => {
+    const b = new FakeBrowser();
+    b.bookmarks = structuredClone(tree({ bar: [link("40", "zebra"), folder("41", "Work", []), link("42", "Äpfel"), link("43", "apple"), folder("44", "archive", [link("45", "b"), link("46", "a")])] }));
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "sortFolder", id: "1" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["archive", "Work", "Äpfel", "apple", "zebra"]); // apf < app; case and accents only break ties
+    expect(titlesIn(b, "44")).toEqual(["b", "a"]); // not recursive, as Chrome
+    expect(sidebar.notice()).toMatchObject({ text: "Sorted ‘Bookmarks bar’ by name", undo: true });
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["zebra", "Work", "Äpfel", "apple", "archive"]);
+  });
+
+  test("Sort by name: Undo refuses once the folder changed meanwhile; an already sorted folder isn't an edit", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "sortFolder", id: "1" }); // Everyday, Empty (folders), then Mail
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Empty", "Everyday", "Mail"]);
+    await b.moveBookmark("10", { parentId: "1", index: 0 }); // elsewhere
+    await sidebar.run({ type: "undo" });
+    await settle();
+    expect(titlesIn(b, "1")).toEqual(["Mail", "Empty", "Everyday"]);
+    expect(sidebar.notice()).toMatchObject({ text: "Couldn't undo: it changed elsewhere" });
+    await sidebar.run({ type: "sortFolder", id: "11" }); // Chat, Deep → Deep (a folder), Chat
+    await settle();
+    expect(titlesIn(b, "11")).toEqual(["Deep", "Chat"]);
+    const moves = b.calls.length;
+    await sidebar.run({ type: "sortFolder", id: "11" });
+    expect(b.calls.length).toBe(moves);
+    expect(sidebar.notice()).toMatchObject({ text: "‘Everyday’ is already sorted by name", undo: false });
   });
 
   test("an edit changes title and URL; Undo restores both", async () => {
@@ -1201,8 +1447,13 @@ describe("tab groups in the Tabs section", () => {
     expect(at("t:5")).not.toHaveProperty("group");
   });
 
-  test("the Tabs heading counts every tab, and how many groups there are and how many are expanded", () => {
-    expect(at("s:tabs")).toMatchObject({ count: 6, groups: { total: 2, open: 1 } });
+  test("the Tabs heading counts what Tidy would close (loose, unpinned, not selected), with the total, and the groups", () => {
+    expect(at("s:tabs")).toMatchObject({ count: 2, tidy: 2, total: 6, groups: { total: 2, open: 0, selected: true } }); // Work is open, but holds the selected tab
+    const looseSelected = sidebarRows(tree(), stripTabs().map((t) => ({ ...t, active: t.id === 5 })), NO_FOLDING, {}, stripGroups());
+    expect(looseSelected.find((r) => r.key === "s:tabs")).toMatchObject({ groups: { total: 2, open: 1 } });
+    expect(looseSelected.find((r) => r.key === "s:tabs")).not.toHaveProperty("groups.selected");
+    const selectedLoose = sidebarRows(tree(), [tab(1, { pinned: true }), tab(2, { active: true }), tab(3), tab(4, { groupId: 10 })], NO_FOLDING, {}, stripGroups());
+    expect(selectedLoose.find((r) => r.key === "s:tabs")).toMatchObject({ count: 1, tidy: 1, total: 4 });
     expect(sidebarRows(tree(), [tab(1)], NO_FOLDING).find((r) => r.key === "s:tabs")).not.toHaveProperty("groups");
   });
 
@@ -1246,10 +1497,12 @@ describe("tab groups in the Tabs section", () => {
   test("a group header dropped in Bookmarks lands wherever a tab would", () => {
     const r = sidebarRows(tree({ bar: BAR, other: [link("20", "Recipes")] }), stripTabs(), folding({ expanded: ["11"] }), {}, stripGroups());
     const g = { kind: "group" as const, id: 10 };
-    expect(dropPlace(r, g, "s:bookmarks", "after")).toEqual({ parentId: "1", index: 0 });
+    expect(dropPlace(r, g, "s:bookmarks", "after")).toEqual({ parentId: "1", index: 3 });
     expect(dropPlace(r, g, "b:12", "after")).toEqual({ parentId: "11", index: 1 });
     expect(dropPlace(r, g, "b:13", "inside")).toEqual({ parentId: "13", index: 1 });
     expect(dropPlace(r, g, "b:2", "inside")).toEqual({ parentId: "2", index: 1 });
+    expect(dropPlace(r, g, "s:bookmarks", "after", "top")).toEqual({ parentId: "1", index: 0 });
+    expect(dropPlace(r, g, "b:13", "inside", "top")).toEqual({ parentId: "13", index: 0 });
     expect(dropPlace(r, g, "g:20", "after")).toBeUndefined();
     expect(dropPlace(r, g, "t:5", "before")).toBeUndefined();
   });
@@ -1311,13 +1564,22 @@ describe("group commands", () => {
     expect(b.calls).toEqual(["new 1", "update group 10 collapsed=true"]);
   });
 
-  test("expand all and collapse all change only the groups that differ", async () => {
+  test("expand all and collapse all change only the groups that differ; collapse all leaves the selected tab's group open", async () => {
     const { b, sidebar } = await open();
     await sidebar.run({ type: "foldGroups", open: true });
     expect(b.calls).toEqual(["update group 20 collapsed=false"]);
     b.calls = [];
     await sidebar.run({ type: "foldGroups", open: false });
-    expect(b.calls).toEqual(["select 5", "update group 10 collapsed=true", "update group 20 collapsed=true"]);
+    expect(b.calls).toEqual(["update group 20 collapsed=true"]); // 3, selected, stays selected in open Work
+  });
+
+  test("with the selected tab loose (or pinned), collapse all collapses every group", async () => {
+    const b = withStrip();
+    b.tabsByWindow.set(1, stripTabs().map((t) => ({ ...t, active: t.id === 5 })));
+    b.groupsByWindow.set(1, stripGroups().map((g) => ({ ...g, collapsed: false })));
+    const sidebar = await openSidebar(b, () => {});
+    await sidebar.run({ type: "foldGroups", open: false });
+    expect(b.calls).toEqual(["update group 10 collapsed=true", "update group 20 collapsed=true"]);
   });
 
   test("rename and recolour", async () => {
@@ -1664,5 +1926,178 @@ describe("Open All on a folder", () => {
   test("the folder menu key works on locked folders too (Open All only reads)", () => {
     const rows = sidebarRows(tree({ bar: BAR, other: [link("20", "Recipes")] }), [], NO_FOLDING);
     expect(keyResult(rows, "b:2", "ContextMenu")).toEqual({ menu: "b:2" });
+  });
+});
+
+// --- Strip moves. ---------------------------------------------------------------------------------
+/** Pinned 1; Work (10, open): 2, 3; loose 4; blue (20, collapsed): 5, 6; loose 7, split 8+9. */
+const moveTabs = () => [
+  tab(1, { pinned: true }),
+  tab(2, { groupId: 10 }),
+  tab(3, { groupId: 10, active: true }),
+  tab(4),
+  tab(5, { groupId: 20 }),
+  tab(6, { groupId: 20 }),
+  tab(7),
+  tab(8, { splitViewId: 3 }),
+  tab(9, { splitViewId: 3 }),
+];
+const moveGroups = (): TabGroupInfo[] => [
+  { id: 10, title: "Work", colour: "red", collapsed: false },
+  { id: 20, title: "", colour: "blue", collapsed: true },
+];
+const order = (b: FakeBrowser) => b.tabsByWindow.get(1)!.map((t) => `${t.id}${t.groupId === 10 ? "w" : t.groupId === 20 ? "b" : ""}${t.splitViewId !== undefined ? "s" : ""}`).join(" ");
+
+describe("stripDrop", () => {
+  const rows = sidebarRows(tree(), moveTabs(), NO_FOLDING, {}, moveGroups());
+  const drop = (source: DragSource, key: string, zone: DropZone) => stripDrop(rows, moveTabs(), source, key, zone);
+  const t = (id: number) => ({ kind: "tab" as const, id });
+  const g = (id: number) => ({ kind: "group" as const, id });
+
+  test("rows: Work's tabs show, blue is a collapsed pill", () => {
+    expect(keys(rows).slice(2)).toEqual(["t:1", "g:10", "t:2", "t:3", "t:4", "g:20", "t:7", "t:8", "t:9", "newtab"]);
+  });
+
+  test("a tab beside a tab takes that tab's group: reorder within a group, into another, out to loose", () => {
+    expect(drop(t(2), "t:3", "after")).toEqual({ kind: "tabs", ids: [2], index: 2, groupId: 10 });
+    expect(drop(t(4), "t:2", "after")).toEqual({ kind: "tabs", ids: [4], index: 2, groupId: 10 });
+    expect(drop(t(3), "t:4", "after")).toEqual({ kind: "tabs", ids: [3], index: 3, groupId: NO_GROUP });
+    expect(drop(t(7), "t:4", "before")).toEqual({ kind: "tabs", ids: [7], index: 3, groupId: NO_GROUP });
+  });
+
+  test("on a group header: before it loose, inside it last in the group, after it first in an expanded group or loose past a collapsed one", () => {
+    expect(drop(t(4), "g:10", "before")).toEqual({ kind: "tabs", ids: [4], index: 1, groupId: NO_GROUP });
+    expect(drop(t(4), "g:10", "inside")).toEqual({ kind: "tabs", ids: [4], index: 3, groupId: 10 });
+    expect(drop(t(4), "g:10", "after")).toEqual({ kind: "tabs", ids: [4], index: 1, groupId: 10 });
+    expect(drop(t(4), "g:20", "inside")).toEqual({ kind: "tabs", ids: [4], index: 5, groupId: 20 });
+    expect(drop(t(4), "g:20", "after")).toEqual({ kind: "tabs", ids: [4], index: 5, groupId: NO_GROUP });
+    expect(drop(t(2), "g:10", "before")).toEqual({ kind: "tabs", ids: [2], index: 1, groupId: NO_GROUP });
+  });
+
+  test("on New tab: loose at the end", () => {
+    expect(drop(t(2), "newtab", "before")).toEqual({ kind: "tabs", ids: [2], index: 8, groupId: NO_GROUP });
+  });
+
+  test("a drop that changes nothing isn't a move", () => {
+    expect(drop(t(3), "t:2", "after")).toBeUndefined();
+    expect(drop(t(4), "t:3", "after")).toEqual({ kind: "tabs", ids: [4], index: 3, groupId: 10 }); // same slot, into Work
+    expect(drop(t(4), "g:20", "before")).toBeUndefined();
+    expect(drop(t(9), "newtab", "after")).toBeUndefined();
+  });
+
+  test("pinned tabs stay among pinned tabs, other tabs outside them", () => {
+    const two = [tab(1, { pinned: true }), tab(11, { pinned: true }), tab(2)];
+    const r = sidebarRows(tree(), two, NO_FOLDING);
+    expect(stripDrop(r, two, t(11), "t:1", "before")).toEqual({ kind: "tabs", ids: [11], index: 0, groupId: NO_GROUP });
+    expect(stripDrop(r, two, t(2), "t:1", "after")).toBeUndefined();
+    expect(stripDrop(r, two, t(1), "t:2", "after")).toBeUndefined();
+    expect(stripDrop(r, two, t(1), "newtab", "before")).toBeUndefined();
+  });
+
+  test("a Split View moves as a pair, and nothing lands between its halves", () => {
+    expect(drop(t(9), "t:4", "before")).toEqual({ kind: "tabs", ids: [8, 9], index: 3, groupId: NO_GROUP });
+    expect(drop(t(4), "t:9", "before")).toEqual({ kind: "tabs", ids: [4], index: 6, groupId: NO_GROUP }); // before the pair
+    expect(drop(t(4), "t:8", "after")).toEqual({ kind: "tabs", ids: [4], index: 8, groupId: NO_GROUP }); // after the pair
+  });
+
+  test("a group lands where a loose tab could: beside loose tabs, before a pill, after a collapsed pill or another group's last tab, at the end", () => {
+    expect(drop(g(10), "t:4", "after")).toEqual({ kind: "group", id: 10, index: 2 });
+    expect(drop(g(10), "g:20", "after")).toEqual({ kind: "group", id: 10, index: 4 });
+    expect(drop(g(20), "g:10", "before")).toEqual({ kind: "group", id: 20, index: 1 });
+    expect(drop(g(20), "t:3", "after")).toEqual({ kind: "group", id: 20, index: 3 });
+    expect(drop(g(10), "newtab", "before")).toEqual({ kind: "group", id: 10, index: 7 });
+  });
+
+  test("never inside another group, among pinned tabs, between a Split View's halves, or onto itself", () => {
+    expect(drop(g(20), "t:2", "after")).toBeUndefined();
+    expect(drop(g(20), "t:3", "before")).toBeUndefined();
+    expect(drop(g(20), "g:10", "inside")).toBeUndefined();
+    expect(drop(g(20), "g:10", "after")).toBeUndefined(); // first inside expanded Work
+    expect(drop(g(10), "t:1", "after")).toBeUndefined();
+    expect(drop(g(10), "t:2", "after")).toBeUndefined();
+    expect(drop(g(10), "g:10", "before")).toBeUndefined();
+    expect(drop(g(10), "t:4", "before")).toBeUndefined(); // where it is already
+    expect(drop(g(20), "t:8", "after")).toEqual({ kind: "group", id: 20, index: 7 }); // past the pair
+  });
+
+  test("bookmarks and drops into Bookmarks aren't strip moves", () => {
+    expect(drop({ kind: "bookmark", key: "b:10" }, "t:4", "after")).toBeUndefined();
+    expect(drop(t(4), "s:bookmarks", "after")).toBeUndefined();
+  });
+});
+
+describe("tabStep and groupStep (Alt+↑/↓), as Chrome's keyboard tab move", () => {
+  const tabs = moveTabs();
+  const groups = moveGroups();
+  test("one slot past a loose neighbour", () => {
+    expect(tabStep(tabs, groups, 7, -1)).toEqual({ kind: "tabs", ids: [7], index: 4, groupId: NO_GROUP }); // up past collapsed blue
+    expect(tabStep(tabs, groups, 2, 1)).toEqual({ kind: "tabs", ids: [2], index: 2, groupId: 10 });
+  });
+  test("at a group's edge it first leaves the group, in place", () => {
+    expect(tabStep(tabs, groups, 3, 1)).toEqual({ kind: "tabs", ids: [3], index: 2, groupId: NO_GROUP });
+    expect(tabStep(tabs, groups, 2, -1)).toEqual({ kind: "tabs", ids: [2], index: 1, groupId: NO_GROUP });
+  });
+  test("next to an expanded group it joins it in place; a collapsed group it passes whole", () => {
+    expect(tabStep(tabs, groups, 4, -1)).toEqual({ kind: "tabs", ids: [4], index: 3, groupId: 10 });
+    expect(tabStep(tabs, groups, 4, 1)).toEqual({ kind: "tabs", ids: [4], index: 5, groupId: NO_GROUP });
+  });
+  test("never across the pinned edge; a Split View moves and is passed as one", () => {
+    expect(tabStep(tabs, groups, 1, 1)).toBeUndefined();
+    expect(tabStep([tab(1, { pinned: true }), tab(2)], [], 2, -1)).toBeUndefined();
+    expect(tabStep(tabs, groups, 8, -1)).toEqual({ kind: "tabs", ids: [8, 9], index: 6, groupId: NO_GROUP });
+    expect(tabStep(tabs, groups, 7, 1)).toEqual({ kind: "tabs", ids: [7], index: 8, groupId: NO_GROUP });
+    expect(tabStep(tabs, groups, 9, 1)).toBeUndefined();
+  });
+  test("a group passes its neighbour: a loose tab, a whole group, a Split View; never the pinned tabs", () => {
+    expect(groupStep(tabs, 10, 1)).toEqual({ kind: "group", id: 10, index: 2 });
+    expect(groupStep(tabs, 20, -1)).toEqual({ kind: "group", id: 20, index: 3 });
+    expect(groupStep([tab(4), tab(5, { groupId: 20 }), tab(2, { groupId: 10 }), tab(3, { groupId: 10 })], 20, 1)).toEqual({ kind: "group", id: 20, index: 3 });
+    expect(groupStep([tab(5, { groupId: 20 }), tab(8, { splitViewId: 3 }), tab(9, { splitViewId: 3 })], 20, 1)).toEqual({ kind: "group", id: 20, index: 2 });
+    expect(groupStep(tabs, 10, -1)).toBeUndefined();
+  });
+  test("Alt+↑/↓ on a tab or group header steps it", () => {
+    const rows = sidebarRows(tree(), tabs, NO_FOLDING, {}, groups);
+    expect(keyResult(rows, "t:4", "ArrowUp", { alt: true })).toEqual({ command: { type: "stepTab", id: 4, direction: -1 } });
+    expect(keyResult(rows, "g:10", "ArrowDown", { alt: true })).toEqual({ command: { type: "stepGroup", id: 10, direction: 1 } });
+  });
+});
+
+describe("Strip moves in the session", () => {
+  const open = async () => {
+    const b = new FakeBrowser();
+    b.tabsByWindow.set(1, moveTabs());
+    b.groupsByWindow.set(1, moveGroups());
+    return { b, sidebar: await openSidebar(b, () => {}) };
+  };
+
+  test("into a group mid-way: group first, then the move", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "moveInStrip", move: { kind: "tabs", ids: [7], index: 2, groupId: 10 } });
+    expect(b.calls).toEqual(["group 7 into 10", "move 7 to 2"]);
+    expect(order(b)).toBe("1 2w 7w 3w 4 5b 6b 8s 9s");
+  });
+
+  test("out of a group: ungroup first (a middle tab lands after the group), then the move; none when already in place", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "moveInStrip", move: { kind: "tabs", ids: [2], index: 1, groupId: NO_GROUP } });
+    expect(b.calls).toEqual(["ungroup 2"]); // an edge tab: ungrouped in place
+    expect(order(b)).toBe("1 2 3w 4 5b 6b 7 8s 9s");
+  });
+
+  test("a group header's move and Alt+↑ on a tab go to Chrome", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "moveInStrip", move: { kind: "group", id: 20, index: 1 } });
+    expect(order(b)).toBe("1 5b 6b 2w 3w 4 7 8s 9s");
+    b.calls = [];
+    await sidebar.run({ type: "stepTab", id: 4, direction: -1 }); // joins Work, in place
+    expect(b.calls).toEqual(["group 4 into 10"]);
+    await sidebar.run({ type: "stepGroup", id: 10, direction: -1 });
+    expect(b.calls.at(-1)).toBe("move group 10 to 1");
+  });
+
+  test("a Split View moves as a pair and is made again", async () => {
+    const { b, sidebar } = await open();
+    await sidebar.run({ type: "moveInStrip", move: { kind: "tabs", ids: [8, 9], index: 3, groupId: NO_GROUP } });
+    expect(b.calls).toEqual(["move 8,9 to 3", "split 8,9"]);
   });
 });

@@ -5,6 +5,7 @@
 // Two halves behind one interface: pure row building and keyboard handling, and a session
 // (openSidebar) that keeps those rows current from browser events and runs commands through
 // the SidebarBrowser seam. Rendering lives in panel.ts; Chrome lives in sidebar-chrome.ts.
+import type { ExpandAll, NewBookmarksAt } from "./settings";
 
 export type Section = "bookmarks" | "tabs";
 
@@ -113,10 +114,15 @@ export function siteIconUrls(pageUrl: string): string[] {
 }
 
 export type Row =
-  /** `tidy` (Tabs only): how many tabs Tidy would close. `groups` (Tabs only, when the window has
-   *  any): how many group headers, and how many of them are expanded. */
-  | { kind: "section"; key: string; section: Section; label: string; open: boolean; count?: number; barId?: string; tidy?: number; groups?: { total: number; open: number }; folders?: { total: number; open: number } }
-  | ({ kind: "folder"; key: string; id: string; title: string; depth: number; open: boolean; count: number; parent?: string; icon?: string } & Placed)
+  /** Tabs: `count` and `tidy` are how many tabs Tidy would close (what the heading shows),
+   *  `total` all of the window's tabs; `groups` (when the window has any): how many group
+   *  headers, how many of them are expanded, and `selected`: whether the selected tab's group is
+   *  one (then `open` leaves it out, as collapse all does). Bookmarks: `barCount`, the bar's
+   *  children; `folders`, its Expand all button's state when the top level has folders. */
+  | { kind: "section"; key: string; section: Section; label: string; open: boolean; count?: number; total?: number; barId?: string; barCount?: number; tidy?: number; groups?: { total: number; open: number; selected?: true }; folders?: FoldState }
+  /** `fold`: its Expand all button's state, when it has subfolders; `skip`: marked "Don't expand
+   *  with Expand all". */
+  | ({ kind: "folder"; key: string; id: string; title: string; depth: number; open: boolean; count: number; parent?: string; icon?: string; fold?: FoldState; skip?: true } & Placed)
   | ({ kind: "bookmark"; key: string; id: string; title: string; url: string; depth: number; parent?: string; savedTitle: string; icon?: string } & Placed)
   /** A Group header (GLOSSARY.md): `open` is Chrome's own expanded state; `selected`: the
    *  window's selected tab is one of its `count` tabs. */
@@ -200,6 +206,8 @@ export type Command =
   | { type: "saveGroup"; id: number; at: Place }
   /** A tab's folder in Bookmarks: every tab of this window, in tab-strip order (Bookmark all tabs). */
   | { type: "saveTabs"; at: Place; title: string }
+  /** Sort by name (GLOSSARY.md): folder `id`'s children in sortedByName's order. */
+  | { type: "sortFolder"; id: string }
   /** Tidy (GLOSSARY.md): close this window's Loose tabs but the selected one. */
   | { type: "tidy" }
   // The Tab menu (GLOSSARY.md), on one tab of this window.
@@ -219,6 +227,10 @@ export type Command =
   | { type: "splitTab"; id: number }
   | { type: "unsplitTab"; id: number }
   /** Close other tabs / Close tabs below (GLOSSARY.md), as Chrome's own. */
+  /** A Strip move (GLOSSARY.md): a dropped tab or group header, or Alt+↑/↓ on one. */
+  | { type: "moveInStrip"; move: StripMove }
+  | { type: "stepTab"; id: number; direction: 1 | -1 }
+  | { type: "stepGroup"; id: number; direction: 1 | -1 }
   /** Open All (GLOSSARY.md) of folder `id`: here, in a new group (resolves to its id), in a new
    *  window, or in a new incognito window. */
   | { type: "openFolder"; id: string; where: OpenAllWhere }
@@ -226,10 +238,13 @@ export type Command =
   | { type: "closeBelow"; id: number }
   // Tab groups, through Chrome's own group state: the rows follow from its events.
   | { type: "toggleGroup"; id: number; open: boolean }
-  /** Expand every group of the window, or collapse every one. */
+  /** Expand every group of the window, or collapse every one but the selected tab's (so it
+   *  stays selected and shown; with the selected tab loose or pinned, every one). */
   | { type: "foldGroups"; open: boolean }
-  /** Expand (every folder that has bookmarks, nested ones too) or collapse all Bookmark folders. */
-  | { type: "foldFolders"; open: boolean }
+  /** An Expand all button (foldedFolders): the Bookmarks heading's (no `id`) or folder `id`'s. */
+  | { type: "foldFolders"; open: boolean; id?: string }
+  /** Mark (or unmark) folder `id` "Don't expand with Expand all". */
+  | { type: "skipFolder"; id: string; skip: boolean }
   | { type: "editGroup"; id: number; title: string; colour?: FolderColour }
   | { type: "newTabInGroup"; id: number }
   | { type: "moveGroupToNewWindow"; id: number }
@@ -286,7 +301,16 @@ function bookmarkRoots(tree: BookmarkNode[]): Rooted[] {
   return [...inBar, ...rest];
 }
 
-function bookmarkRows(nodes: Rooted[], depth: number, expanded: Set<string>, icons: BookmarkIcons, parent?: string): Row[] {
+/** What folder rows need besides the tree: Folding's expanded folders, Bookmark icons, and Expand all's marks and mode. */
+interface FolderContext {
+  expanded: ReadonlySet<string>;
+  icons: BookmarkIcons;
+  skipped: ReadonlySet<string>;
+  mode: ExpandAll;
+}
+
+function bookmarkRows(nodes: Rooted[], depth: number, ctx: FolderContext, parent?: string): Row[] {
+  const { expanded, icons } = ctx;
   const rows: Row[] = [];
   const within = parent === undefined ? {} : { parent };
   for (const { node: n, place: placed } of nodes) {
@@ -300,20 +324,57 @@ function bookmarkRows(nodes: Rooted[], depth: number, expanded: Set<string>, ico
     }
     const children = n.children ?? [];
     const open = expanded.has(n.id);
-    rows.push({ kind: "folder", key, id: n.id, title: n.title, depth, open, count: children.length, ...within, ...place });
+    const fold = children.some(isFolderNode) ? { fold: foldState(children, open, expanded, ctx.skipped, ctx.mode) } : {};
+    rows.push({ kind: "folder", key, id: n.id, title: n.title, depth, open, count: children.length, ...within, ...place, ...fold, ...(ctx.skipped.has(n.id) && { skip: true as const }) });
     if (open) {
       // A Chrome-locked folder locks what's inside; a root folder's children are free.
       const lockedHere = n.unmodifiable !== undefined;
       const inside = children.map((node, index) => ({ node, place: { parentId: n.id, index, locked: lockedHere || node.unmodifiable !== undefined } }));
-      rows.push(...bookmarkRows(inside, depth + 1, expanded, icons, key));
+      rows.push(...bookmarkRows(inside, depth + 1, ctx, key));
     }
   }
   return rows;
 }
 
-/** Every folder with something inside, at any depth: what "expand all" opens. */
-function folderIds(nodes: BookmarkNode[]): string[] {
-  return nodes.flatMap((n) => (n.url === undefined && (n.children?.length ?? 0) > 0 ? [n.id, ...folderIds(n.children ?? [])] : []));
+// --- Expand all (GLOSSARY.md). ----------------------------------------------------------------
+/** An Expand all button: "expand" opens folders below it, "collapse" closes every one below it. */
+export type FoldState = "expand" | "collapse";
+const isFolderNode = (n: BookmarkNode) => n.url === undefined;
+
+/** The folders an Expand all button opens among `nodes` (one level: the heading's top level or
+ *  a folder's children): those with something inside and not marked; with every level, theirs
+ *  too, never descending into a marked folder. */
+export function expandTargets(nodes: BookmarkNode[], skipped: ReadonlySet<string>, mode: ExpandAll): string[] {
+  return nodes.flatMap((n) =>
+    isFolderNode(n) && !skipped.has(n.id) && (n.children?.length ?? 0) > 0 ? [n.id, ...(mode === "every" ? expandTargets(n.children!, skipped, mode) : [])] : [],
+  );
+}
+/** Every folder among `nodes` and below, marked ones included: what a collapse closes. */
+export function foldersBelow(nodes: BookmarkNode[]): string[] {
+  return nodes.flatMap((n) => (isFolderNode(n) ? [n.id, ...foldersBelow(n.children ?? [])] : []));
+}
+/** A button over `nodes`: "expand" while it's hidden (`shown` false: its folder closed or the
+ *  Bookmarks section folded) or a folder it would open is closed; else "collapse" while
+ *  anything below is open. */
+export function foldState(nodes: BookmarkNode[], shown: boolean, expanded: ReadonlySet<string>, skipped: ReadonlySet<string>, mode: ExpandAll): FoldState {
+  if (!shown) return "expand";
+  const targets = expandTargets(nodes, skipped, mode);
+  if (targets.some((id) => !expanded.has(id))) return "expand";
+  return foldersBelow(nodes).some((id) => expanded.has(id)) ? "collapse" : "expand";
+}
+/** Folding after an Expand all button: opening adds its targets (and the folder itself, or
+ *  unfolds Bookmarks); closing closes every folder below it (from the heading: every folder). */
+export function foldedFolders(folding: Folding, tree: BookmarkNode[], id: string | undefined, open: boolean, skipped: ReadonlySet<string>, mode: ExpandAll): Folding {
+  const level = id === undefined ? bookmarkRoots(tree).map((r) => r.node) : findNode(tree, id)?.children;
+  if (!level) return folding;
+  if (!open) {
+    const closing = new Set(id === undefined ? folding.expanded : foldersBelow(level));
+    return { ...folding, expanded: folding.expanded.filter((x) => !closing.has(x)) };
+  }
+  return {
+    folded: id === undefined ? folding.folded.filter((x) => x !== "bookmarks") : folding.folded,
+    expanded: [...new Set([...folding.expanded, ...(id === undefined ? [] : [id]), ...expandTargets(level, skipped, mode)])],
+  };
 }
 
 const tabRow = (t: TabInfo, group?: TabGroupInfo): Row => ({
@@ -355,7 +416,15 @@ function tabRows(tabs: TabInfo[], groups: TabGroupInfo[]): Row[] {
   return rows;
 }
 
-export function sidebarRows(tree: BookmarkNode[], tabs: TabInfo[], folding: Folding, icons: BookmarkIcons = {}, groups: TabGroupInfo[] = []): Row[] {
+/** `expandAll`: folders marked "Don't expand with Expand all", and Expand all's mode. */
+export function sidebarRows(
+  tree: BookmarkNode[],
+  tabs: TabInfo[],
+  folding: Folding,
+  icons: BookmarkIcons = {},
+  groups: TabGroupInfo[] = [],
+  expandAll: { skipped?: ReadonlySet<string>; mode?: ExpandAll } = {},
+): Row[] {
   const folded = new Set(folding.folded);
   const head = (section: Section, count?: number): Extract<Row, { kind: "section" }> => ({
     kind: "section",
@@ -365,24 +434,29 @@ export function sidebarRows(tree: BookmarkNode[], tabs: TabInfo[], folding: Fold
     open: !folded.has(section),
     ...(count !== undefined && { count }),
   });
-  const barId = tree[0]?.children?.find((n) => n.folderType === "bookmarks-bar")?.id;
+  const bar = tree[0]?.children?.find((n) => n.folderType === "bookmarks-bar");
+  const barId = bar?.id;
   const roots = bookmarkRoots(tree);
-  const folderList = folderIds(roots.map((r) => r.node));
-  const expandedNow = new Set(folding.expanded);
+  const top = roots.map((r) => r.node);
+  const ctx: FolderContext = { expanded: new Set(folding.expanded), icons, skipped: expandAll.skipped ?? new Set(), mode: expandAll.mode ?? "level" };
   const rows: Row[] = [
     {
       ...head("bookmarks"),
-      ...(barId !== undefined && { barId }),
-      ...(folderList.length > 0 && { folders: { total: folderList.length, open: folderList.filter((id) => expandedNow.has(id)).length } }),
+      ...(barId !== undefined && { barId, barCount: bar?.children?.length ?? 0 }),
+      ...(top.some(isFolderNode) && { folders: foldState(top, !folded.has("bookmarks"), ctx.expanded, ctx.skipped, ctx.mode) }),
     },
   ];
-  if (!folded.has("bookmarks")) rows.push(...bookmarkRows(roots, 0, expandedNow, icons));
+  if (!folded.has("bookmarks")) rows.push(...bookmarkRows(roots, 0, ctx));
   const strip = tabRows(tabs, groups);
   const headers = strip.filter((r) => r.kind === "group");
+  const tidy = tabs.filter((t) => isLoose(t) && !t.active).length;
   rows.push({
-    ...head("tabs", tabs.length),
-    tidy: tabs.filter((t) => isLoose(t) && !t.active).length,
-    ...(headers.length > 0 && { groups: { total: headers.length, open: headers.filter((r) => r.open).length } }),
+    ...head("tabs", tidy),
+    total: tabs.length,
+    tidy,
+    ...(headers.length > 0 && {
+      groups: { total: headers.length, open: headers.filter((r) => r.open && !r.selected).length, ...(headers.some((r) => r.selected) && { selected: true as const }) },
+    }),
   });
   if (!folded.has("tabs")) rows.push(...strip, { kind: "newtab", key: "newtab" });
   return rows;
@@ -395,8 +469,10 @@ const isPlaced = (row: Row | undefined): row is PlacedRow => row?.kind === "fold
 /** Where `source` lands when dropped on row `overKey` in `zone`, or undefined when it can't go
  *  there: into Tabs, beside a root folder, into a locked folder, a folder into itself or below
  *  it, a locked source, or a move that leaves it where it is. A tab or group header lands like a
- *  bookmark (as a new bookmark or folder, so without the same-slot rule). */
-export function dropPlace(rows: Row[], source: DragSource, overKey: string, zone: DropZone): Place | undefined {
+ *  bookmark (as a new bookmark or folder, so without the same-slot rule), except where the panel
+ *  picks the slot — inside a folder, or on the Bookmarks heading (the bar) — which follows `newAt`
+ *  (New bookmarks go). A bookmark moved inside a folder goes last, onto the heading first. */
+export function dropPlace(rows: Row[], source: DragSource, overKey: string, zone: DropZone, newAt: NewBookmarksAt = "bottom"): Place | undefined {
   const byKey = new Map(rows.map((r) => [r.key, r]));
   const target = byKey.get(overKey);
   let from: PlacedRow | undefined;
@@ -409,12 +485,13 @@ export function dropPlace(rows: Row[], source: DragSource, overKey: string, zone
     }
   }
 
+  const top = source.kind === "bookmark" ? undefined : newAt === "top";
   let place: Place | undefined;
   if (target?.kind === "section") {
-    place = target.section === "bookmarks" && target.barId !== undefined ? { parentId: target.barId, index: 0 } : undefined;
+    place = target.section === "bookmarks" && target.barId !== undefined ? { parentId: target.barId, index: top === false ? target.barCount ?? 0 : 0 } : undefined;
   } else if (isPlaced(target)) {
     const takesDrops = target.kind === "folder" && (!target.locked || target.root === true);
-    if (zone === "inside") place = takesDrops && target.kind === "folder" ? { parentId: target.id, index: target.count } : undefined;
+    if (zone === "inside") place = takesDrops && target.kind === "folder" ? { parentId: target.id, index: top ? 0 : target.count } : undefined;
     else if (target.locked) place = zone === "after" && takesDrops && target.kind === "folder" && target.open ? { parentId: target.id, index: 0 } : undefined;
     else if (zone === "before") place = { parentId: target.parentId, index: target.index };
     else if (target.kind === "folder" && target.open) place = { parentId: target.id, index: 0 };
@@ -424,14 +501,33 @@ export function dropPlace(rows: Row[], source: DragSource, overKey: string, zone
   return place;
 }
 
-/** Where the row menu's New folder and Add current tab put the new node: after a bookmark,
- *  at the end inside a folder, first in the bookmarks bar from the Bookmarks heading. */
-export function addPlace(rows: Row[], key: string): Place | undefined {
+/** Where a menu puts a new node (New folder, Add current tab; on the Bookmarks heading also the
+ *  tab and group menus' Bookmark tab, Bookmark all tabs and Save group to bookmarks): right after
+ *  a bookmark; inside a folder or the bookmarks bar first or last, by `newAt` (New bookmarks go). */
+export function addPlace(rows: Row[], key: string, newAt: NewBookmarksAt = "bottom"): Place | undefined {
   const row = rows.find((r) => r.key === key);
-  if (row?.kind === "section") return row.section === "bookmarks" && row.barId !== undefined ? { parentId: row.barId, index: 0 } : undefined;
+  const top = newAt === "top";
+  if (row?.kind === "section") return row.section === "bookmarks" && row.barId !== undefined ? { parentId: row.barId, index: top ? 0 : row.barCount ?? 0 } : undefined;
   if (!isPlaced(row)) return undefined;
-  if (row.kind === "folder") return !row.locked || row.root ? { parentId: row.id, index: row.count } : undefined;
+  if (row.kind === "folder") return !row.locked || row.root ? { parentId: row.id, index: top ? 0 : row.count } : undefined;
   return row.locked ? undefined : { parentId: row.parentId, index: row.index + 1 };
+}
+
+/** Sort by name, as Chrome's bookmark manager (BookmarkModel::SortChildren): a folder's own
+ *  children, not its subfolders', folders before bookmarks, each by title with the locale's
+ *  collation (an untitled bookmark's title is empty, so it sorts first), ties keeping their order.
+ *  Resolves to the children's IDs in the new order. */
+export function sortedByName(children: BookmarkNode[]): string[] {
+  const collator = new Intl.Collator();
+  const folder = (n: BookmarkNode) => (n.url === undefined ? 0 : 1);
+  return [...children].sort((a, b) => folder(a) - folder(b) || collator.compare(a.title, b.title)).map((n) => n.id);
+}
+/** Whether Sort by name is offered on a row: an editable folder, a root folder (Other bookmarks)
+ *  or the Bookmarks heading (the bar), with two or more children — as the manager, where only
+ *  managed folders can't be sorted. */
+export function sortable(row: Row | undefined): boolean {
+  if (row?.kind === "section") return row.barId !== undefined && (row.barCount ?? 0) > 1;
+  return row?.kind === "folder" && (!row.locked || row.root === true) && row.count > 1;
 }
 
 // --- Commands and keyboard. -----------------------------------------------------------------
@@ -482,11 +578,25 @@ export function keyResult(rows: Row[], focusKey: string, key: string, mods: KeyM
   if (mods.meta && !mods.shift && !mods.alt && key.toLowerCase() === "z") return { command: { type: "undo" } };
   const hasMenu = isPlaced(row) || row.kind === "group" || row.kind === "tab" || (row.kind === "section" && row.section === "bookmarks");
   if (key === "ContextMenu" || (key === "F10" && mods.shift)) return hasMenu ? { menu: row.key } : {};
+  // Expand all: Shift+→ / Shift+← run the row's button; * opens the row's siblings (WAI-ARIA tree), with its parent's button.
+  if (mods.shift && !mods.alt && !mods.meta && (key === "ArrowRight" || key === "ArrowLeft")) {
+    const open = key === "ArrowRight";
+    if (row.kind === "folder" && row.fold) return { command: { type: "foldFolders", open, id: row.id } };
+    if (row.kind === "section" && row.folders) return { command: { type: "foldFolders", open } };
+    if (row.kind === "folder" || row.kind === "section" || row.kind === "bookmark") return {};
+  }
+  if (key === "*" && isPlaced(row)) {
+    return { command: { type: "foldFolders", open: true, ...(row.parent !== undefined && { id: row.parent.slice("b:".length) }) } };
+  }
   if (isPlaced(row)) {
     const edit = editKey(rows, row, key, mods);
     if (edit) return edit;
   }
   if (row.kind === "group" && key === "F2" && !mods.alt) return { edit: row.key };
+  if (mods.alt && (key === "ArrowUp" || key === "ArrowDown") && (row.kind === "tab" || row.kind === "group")) {
+    const direction = key === "ArrowDown" ? 1 : -1;
+    return { command: row.kind === "tab" ? { type: "stepTab", id: row.id, direction } : { type: "stepGroup", id: row.id, direction } };
+  }
   if (mods.alt) return {}; // ⌘/Ctrl still pass: ⌘↵ opens a bookmark in the background
   const at = (j: number) => ({ focus: rows[Math.max(0, Math.min(rows.length - 1, j))]!.key });
   switch (key) {
@@ -543,6 +653,134 @@ export function selectionAfterCollapse(tabs: TabInfo[], hidden: Set<number>): nu
   return next ? next.id : null;
 }
 
+// --- Strip moves: tabs and groups moved on the tab strip, as Chrome's own strip moves them. -------
+/** Where a Strip move puts things, in chrome.tabs.move / tabGroups.move coordinates: `index` is
+ *  the final position of the first tab moved. A tab move also sets the tabs' group (NO_GROUP:
+ *  loose); `ids` is one tab, or both halves of its Split View, which move together. */
+export type StripMove = { kind: "tabs"; ids: number[]; index: number; groupId: number } | { kind: "group"; id: number; index: number };
+
+/** A tab and, when it's half of a Split View, its partner: what moves together, in strip order. */
+function unitOf(tabs: TabInfo[], id: number): TabInfo[] {
+  const t = tabs.find((x) => x.id === id);
+  if (!t) return [];
+  return t.splitViewId === undefined ? [t] : tabs.filter((x) => x.splitViewId === t.splitViewId);
+}
+/** First and last position of group `id`'s tabs in `tabs`, or undefined when it has none there. */
+function span(tabs: TabInfo[], id: number): { first: number; last: number } | undefined {
+  const first = tabs.findIndex((t) => t.groupId === id);
+  if (first < 0) return undefined;
+  return { first, last: tabs.map((t) => t.groupId).lastIndexOf(id) };
+}
+/** Slot `pos` of `rest`, moved past a Split View it would land in the middle of (forward when
+ *  dropping after a row, else back). */
+function outsideSplits(rest: TabInfo[], pos: number, forward: boolean): number {
+  const a = rest[pos - 1];
+  const b = rest[pos];
+  return a && b && a.splitViewId !== undefined && a.splitViewId === b.splitViewId ? pos + (forward ? 1 : -1) : pos;
+}
+
+/** Where a tab or group header dropped on a Tabs row (`overKey`, `zone`) lands on the tab strip,
+ *  as on Chrome's vertical tab strip; undefined for a drop that isn't a Strip move (into Bookmarks,
+ *  a bookmark dragged in, nowhere new). `tabs`: this window's tabs in strip order, collapsed
+ *  groups' included. A tab dropped beside another takes that one's group (or none); on a group
+ *  header: before it, loose before the group; inside it, last in the group; after it, first in an
+ *  expanded group or loose after a collapsed one; on New tab, loose at the end. Pinned tabs stay
+ *  among pinned tabs and others outside them (Chrome's strip and API keep the two apart). A group
+ *  lands only where loose tabs could: never inside another group or among pinned tabs. Nothing
+ *  lands between the two halves of a Split View. */
+export function stripDrop(rows: Row[], tabs: TabInfo[], source: DragSource, overKey: string, zone: DropZone): StripMove | undefined {
+  const target = rows.find((r) => r.key === overKey);
+  if (target?.kind !== "tab" && target?.kind !== "group" && target?.kind !== "newtab") return undefined;
+  const after = zone === "after";
+  if (source.kind === "tab") {
+    const unit = unitOf(tabs, source.id);
+    if (unit.length === 0) return undefined;
+    const ids = unit.map((t) => t.id);
+    const pinned = unit[0]!.pinned;
+    const rest = tabs.filter((t) => !ids.includes(t.id));
+    let pos: number;
+    let groupId: number;
+    if (target.kind === "tab") {
+      const t = rest.find((x) => x.id === target.id);
+      if (!t || t.pinned !== pinned) return undefined;
+      pos = outsideSplits(rest, rest.indexOf(t) + (after ? 1 : 0), after);
+      groupId = t.groupId;
+    } else if (target.kind === "group") {
+      const s = span(rest, target.id);
+      if (pinned || !s) return undefined;
+      if (zone === "before") [pos, groupId] = [s.first, NO_GROUP];
+      else if (zone === "inside") [pos, groupId] = [s.last + 1, target.id];
+      else if (target.open) [pos, groupId] = [s.first, target.id];
+      else [pos, groupId] = [s.last + 1, NO_GROUP];
+    } else {
+      if (pinned) return undefined;
+      [pos, groupId] = [rest.length, NO_GROUP];
+    }
+    if (pos === tabs.indexOf(unit[0]!) && unit.every((t) => t.groupId === groupId)) return undefined;
+    return { kind: "tabs", ids, index: pos, groupId };
+  }
+  if (source.kind === "group") {
+    const own = span(tabs, source.id);
+    if (!own) return undefined;
+    const rest = tabs.filter((t) => t.groupId !== source.id);
+    let pos: number;
+    if (target.kind === "tab") {
+      const t = rest.find((x) => x.id === target.id);
+      if (!t || t.pinned) return undefined;
+      if (t.groupId === NO_GROUP) pos = outsideSplits(rest, rest.indexOf(t) + (after ? 1 : 0), after);
+      else {
+        // Only just below another group: after its last tab.
+        const s = span(rest, t.groupId)!;
+        if (!after || rest.indexOf(t) !== s.last) return undefined;
+        pos = s.last + 1;
+      }
+    } else if (target.kind === "group") {
+      const s = span(rest, target.id);
+      if (!s) return undefined;
+      if (zone === "before") pos = s.first;
+      else if (after && !target.open) pos = s.last + 1;
+      else return undefined;
+    } else pos = rest.length;
+    return pos === own.first ? undefined : { kind: "group", id: source.id, index: pos };
+  }
+  return undefined;
+}
+
+/** Alt+↑/↓ on a tab, as Chrome's own keyboard tab move (TabStripModel::MoveTabRelative): one
+ *  slot past its neighbour (a Split View counts as one), never across the pinned edge; at a
+ *  group's edge it first leaves the group, in place; next to an expanded group it joins it, in
+ *  place; a collapsed group it passes whole. `direction`: 1 down (Chrome's next), -1 up. */
+export function tabStep(tabs: TabInfo[], groups: TabGroupInfo[], id: number, direction: 1 | -1): StripMove | undefined {
+  const unit = unitOf(tabs, id);
+  if (unit.length === 0) return undefined;
+  const ids = unit.map((t) => t.id);
+  const start = tabs.indexOf(unit[0]!);
+  const neighbour = tabs[direction > 0 ? start + unit.length : start - 1];
+  let index = start;
+  if (neighbour && neighbour.pinned === unit[0]!.pinned) index += direction * unitOf(tabs, neighbour.id).length;
+  const current = unit[0]!.groupId;
+  let groupId = index === start || !neighbour ? NO_GROUP : neighbour.groupId;
+  if (current !== groupId) {
+    if (current !== NO_GROUP) [index, groupId] = [start, NO_GROUP];
+    else if (groups.find((g) => g.id === groupId)?.collapsed) {
+      const s = span(tabs, groupId)!;
+      [index, groupId] = [direction > 0 ? s.last + 1 - unit.length : s.first, NO_GROUP];
+    } else index = start;
+  }
+  return index === start && groupId === current ? undefined : { kind: "tabs", ids, index, groupId };
+}
+
+/** Alt+↑/↓ on a group header: the group moves past its neighbour (a loose tab, a Split View or a
+ *  whole group), never into the pinned tabs. */
+export function groupStep(tabs: TabInfo[], id: number, direction: 1 | -1): StripMove | undefined {
+  const own = span(tabs, id);
+  if (!own) return undefined;
+  const neighbour = tabs[direction > 0 ? own.last + 1 : own.first - 1];
+  if (!neighbour || neighbour.pinned) return undefined;
+  const passing = neighbour.groupId !== NO_GROUP ? tabs.filter((t) => t.groupId === neighbour.groupId).length : unitOf(tabs, neighbour.id).length;
+  return { kind: "group", id, index: own.first + direction * passing };
+}
+
 /** Whether splitTab can pair `tab` with the selected tab `active`: neither in a Split View, and
  *  (for another tab) the same pinned and group state, as chrome.tabs.createSplit requires. */
 export function canSplitWith(tab: TabInfo, active: TabInfo): boolean {
@@ -557,7 +795,9 @@ export type SidebarEvent =
   | { kind: "tabs"; windowId?: number; changed?: string[] }
   | { kind: "folding"; folding: Folding }
   /** Bookmark icons set (or, null, removed), by bookmark ID. */
-  | { kind: "icons"; changes: IconChanges };
+  | { kind: "icons"; changes: IconChanges }
+  /** "Don't expand with Expand all" marks set (true) or removed (false), by bookmark ID. */
+  | { kind: "skips"; changes: Record<string, boolean> };
 
 /** The browser operations the Sidebar needs. Two adapters: Chrome (sidebar-chrome.ts) and the test fake. */
 export interface SidebarBrowser {
@@ -569,6 +809,9 @@ export interface SidebarBrowser {
   saveFolding(folding: Folding): Promise<void>;
   loadIcons(): Promise<BookmarkIcons | undefined>;
   saveIcons(changes: IconChanges): Promise<void>;
+  /** Folders marked "Don't expand with Expand all", per profile. */
+  loadSkips(): Promise<string[]>;
+  saveSkips(changes: Record<string, boolean>): Promise<void>;
   subscribe(listener: (event: SidebarEvent) => void): void;
   openBookmark(windowId: number, url: string, background: boolean): Promise<void>;
   selectTab(tabId: number): Promise<void>;
@@ -597,6 +840,12 @@ export interface SidebarBrowser {
   unsplit(splitViewId: number): Promise<void>;
   /** The other normal windows of this profile. */
   otherWindows(windowId: number): Promise<WindowInfo[]>;
+  // Strip moves.
+  /** Tabs to `index` (the first's final position), keeping their order; ends a Split View. */
+  moveTabs(tabIds: number[], index: number): Promise<void>;
+  moveGroup(groupId: number, index: number): Promise<void>;
+  /** Into group `groupId`, in place when beside it (else last in it); keeps a Split View. */
+  groupInto(tabIds: number[], groupId: number): Promise<void>;
   // Open All.
   /** Background tabs at the end of the window, in order; resolves to the ones that opened. */
   openTabs(windowId: number, urls: string[]): Promise<number[]>;
@@ -638,6 +887,8 @@ export interface Sidebar {
   readonly canSplit: boolean;
   /** The bookmark tree as last read (for the folder menu's Open All counts). */
   tree(): BookmarkNode[];
+  /** Expand all opens one level at a time or every level (the options page's setting). */
+  setExpandAll(mode: ExpandAll): void;
 }
 
 /** A bookmark's editable fields; a missing one isn't changed. */
@@ -661,9 +912,11 @@ type UndoRecord =
   | { kind: "tabs"; tabs: ReopenedTab[] }
   | { kind: "move"; id: string; from: Place }
   | { kind: "edit"; id: string; before: BookmarkFields; after: BookmarkFields; icon?: { before: string | null; after: string | null } }
-  | { kind: "remove"; node: BookmarkNode; at: Place; icons: BookmarkIcons }
+  | { kind: "remove"; node: BookmarkNode; at: Place; icons: BookmarkIcons; skips?: string[] }
   | { kind: "create"; id: string }
-  | { kind: "folder"; id: string; children: string[] };
+  | { kind: "folder"; id: string; children: string[] }
+  /** Sort by name: back to `before` only while the folder is still in the `after` order. */
+  | { kind: "order"; id: string; before: string[]; after: string[] };
 
 /** How many children folder `id` has now; undefined when it's gone. */
 function childCount(nodes: BookmarkNode[], id: string): number | undefined {
@@ -697,10 +950,17 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
   let groups: TabGroupInfo[] = [];
   let folding: Folding = NO_FOLDING;
   let icons: BookmarkIcons = {};
+  let skips = new Set<string>();
+  let expandAll: ExpandAll = "level";
   let rows: Row[] = [];
   let started = false; // the caller renders once openSidebar resolves; no change calls before
+  const build = () => sidebarRows(tree, tabs, folding, icons, groups, { skipped: skips, mode: expandAll });
+  const applySkips = (changes: Record<string, boolean>) => {
+    skips = new Set(skips);
+    for (const [id, on] of Object.entries(changes)) on ? skips.add(id) : skips.delete(id);
+  };
   const rebuild = () => {
-    rows = sidebarRows(tree, tabs, folding, icons, groups);
+    rows = build();
     if (started) onChange();
   };
 
@@ -725,8 +985,15 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
   let foldingFromEvent = false; // a Folding change seen during startup beats the startup read
   let iconsLoaded = false;
   let iconsSeen: IconChanges = {}; // icon changes seen during startup, removals included
+  let skipsLoaded = false;
+  let skipsSeen: Record<string, boolean> = {};
   browser.subscribe((event) => {
     if (event.kind === "bookmarks") return void reread("bookmarks");
+    if (event.kind === "skips") {
+      if (!skipsLoaded) skipsSeen = { ...skipsSeen, ...event.changes };
+      applySkips(event.changes);
+      return rebuild();
+    }
     if (event.kind === "icons") {
       if (!iconsLoaded) iconsSeen = { ...iconsSeen, ...event.changes };
       icons = applyIcons(icons, event.changes);
@@ -753,8 +1020,13 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
       icons = applyIcons(stored ?? {}, iconsSeen); // changes seen meanwhile win
       iconsLoaded = true;
     }),
+    browser.loadSkips().then((stored) => {
+      skips = new Set(stored);
+      applySkips(skipsSeen);
+      skipsLoaded = true;
+    }),
   ]);
-  rows = sidebarRows(tree, tabs, folding, icons, groups);
+  rows = build();
   started = true;
 
   /** Fresh tabs of this window, or undefined when `tabId` is no longer one of them. */
@@ -842,6 +1114,23 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
       throw error;
     }
   }
+  /** Puts folder `id`'s children, now in order `now`, in order `order` (the same IDs): each in
+   *  turn moved to its slot, so the ones before it are already placed. */
+  async function reorder(id: string, now: string[], order: string[]): Promise<void> {
+    const current = [...now];
+    for (const [index, child] of order.entries()) {
+      if (current[index] === child) continue;
+      await browser.moveBookmark(child, { parentId: id, index });
+      current.splice(current.indexOf(child), 1);
+      current.splice(index, 0, child);
+    }
+  }
+  async function writeSkips(changes: Record<string, boolean>): Promise<void> {
+    if (Object.keys(changes).length === 0) return;
+    await browser.saveSkips(changes);
+    applySkips(changes);
+    rebuild();
+  }
   /** Every ID in a subtree. */
   const idsIn = (node: BookmarkNode): string[] => [node.id, ...(node.children ?? []).flatMap(idsIn)];
 
@@ -887,6 +1176,7 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
           const reopened = folding.expanded.flatMap((id) => (ids.has(id) ? [ids.get(id)!] : []));
           if (reopened.length > 0) await refold({ ...folding, expanded: [...folding.expanded, ...reopened] });
           await writeIcons(Object.fromEntries(Object.entries(record.icons).flatMap(([old, icon]) => (ids.has(old) ? [[ids.get(old)!, icon]] : []))));
+          await writeSkips(Object.fromEntries((record.skips ?? []).flatMap((old) => (ids.has(old) ? [[ids.get(old)!, true]] : []))));
           break;
         }
         case "create":
@@ -898,6 +1188,12 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
           if (!now || inside.length !== record.children.length || inside.some((id) => !record.children.includes(id))) throw new Error("changed");
           await browser.removeBookmark(record.id, true);
           await writeIcons({ [record.id]: null }).catch(() => {}); // an orphan icon is harmless
+          break;
+        }
+        case "order": {
+          const now = (locate(await browser.bookmarkTree(), record.id)?.node.children ?? []).map((c) => c.id);
+          if (now.join() !== record.after.join()) throw new Error("changed");
+          await reorder(record.id, record.after, record.before);
           break;
         }
         case "tabs": {
@@ -999,6 +1295,23 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
     return undefined;
   }
 
+  /** Carries out a Strip move against fresh tabs: the group first (Chrome keeps a tab beside a
+   *  group where it is when it joins, and ungroups an edge tab in place), then the move, which
+   *  Chrome reads as membership only at a group's edge. A Split View moved apart by the move (any
+   *  tabs.move ends one) is made again. */
+  async function moveInStrip(move: StripMove): Promise<void> {
+    if (move.kind === "group") return void (await browser.moveGroup(move.id, move.index));
+    const now = await browser.tabs(windowId);
+    const unit = now.filter((t) => move.ids.includes(t.id));
+    if (unit.length !== move.ids.length) return;
+    if (move.groupId !== NO_GROUP && unit.some((t) => t.groupId !== move.groupId)) await browser.groupInto(move.ids, move.groupId);
+    else if (move.groupId === NO_GROUP && unit.some((t) => t.groupId !== NO_GROUP)) await browser.ungroupTabs(move.ids);
+    const at = (await browser.tabs(windowId)).findIndex((t) => t.id === move.ids[0]);
+    if (at === move.index) return;
+    await browser.moveTabs(move.ids, move.index);
+    if (move.ids.length === 2 && unit[0]!.splitViewId !== undefined && browser.canSplit) await browser.createSplit([move.ids[0]!, move.ids[1]!]);
+  }
+
   /** splitTab: the selected tab and `id`, which moves beside it first (Chrome's API takes only
    *  adjacent tabs with the same pinned and group state, so other tabs aren't offered); on the
    *  selected tab itself, it and a new tab beside it. */
@@ -1025,6 +1338,11 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
     tree: () => tree,
     otherWindows: () => browser.otherWindows(windowId),
     canSplit: browser.canSplit,
+    setExpandAll(mode) {
+      if (mode === expandAll) return;
+      expandAll = mode;
+      rebuild();
+    },
     async run(command, options = {}) {
       switch (command.type) {
         case "moveBookmark":
@@ -1057,7 +1375,10 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
             // The deleted bookmarks' icons leave storage and wait in the Undo record.
             const gone = Object.fromEntries(idsIn(node).flatMap((id) => (stored[id] !== undefined ? [[id, stored[id]!]] : [])));
             await writeIcons(Object.fromEntries(Object.keys(gone).map((id) => [id, null]))).catch(() => {});
-            return { record: { kind: "remove", node, at: { parentId: was.parentId, index: was.index }, icons: gone }, text: `Deleted ‘${nameOf(node)}’` };
+            // So do their Expand all marks.
+            const marked = idsIn(node).filter((id) => skips.has(id));
+            await writeSkips(Object.fromEntries(marked.map((id) => [id, false]))).catch(() => {});
+            return { record: { kind: "remove", node, at: { parentId: was.parentId, index: was.index }, icons: gone, skips: marked }, text: `Deleted ‘${nameOf(node)}’` };
           });
         case "newFolder":
         case "addBookmark":
@@ -1083,6 +1404,22 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
           });
         case "saveTabs":
           return edit(async () => saveFolder(command.at, command.title, await browser.tabs(windowId)));
+        case "sortFolder":
+          return edit(async (fresh) => {
+            const folder = locate(fresh, command.id)?.node;
+            if (!folder?.children || folder.unmodifiable !== undefined) throw new Error("gone");
+            const before = folder.children.map((c) => c.id);
+            const after = sortedByName(folder.children);
+            const name = folder.title || "folder";
+            if (after.join() === before.join()) return void say(`‘${name}’ is already sorted by name`, false);
+            try {
+              await reorder(command.id, before, after);
+            } catch {
+              const now = (locate(await browser.bookmarkTree(), command.id)?.node.children ?? []).map((c) => c.id);
+              throw new PartialEdit({ kind: "order", id: command.id, before, after: now }, `Couldn't finish sorting ‘${name}’`);
+            }
+            return { record: { kind: "order", id: command.id, before, after }, text: `Sorted ‘${name}’ by name` };
+          });
         case "tidy":
           return serial(async () => {
             const candidates = (await browser.tabs(windowId)).flatMap((t, index) => (isLoose(t) && !t.active ? [{ id: t.id, url: t.url, index }] : []));
@@ -1098,6 +1435,14 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
             say(`Closed ${gone.length} tab${gone.length === 1 ? "" : "s"}`, true);
             return undefined;
           });
+        case "moveInStrip":
+          return void (await moveInStrip(command.move));
+        case "stepTab":
+        case "stepGroup": {
+          const [now, all] = await strip();
+          const move = command.type === "stepTab" ? tabStep(now, all, command.id, command.direction) : groupStep(now, command.id, command.direction);
+          return void (move && (await moveInStrip(move)));
+        }
         case "openFolder": {
           const fresh = await browser.bookmarkTree();
           const urls = openAllUrls(fresh, command.id, command.where === "incognito").filter(openable);
@@ -1156,9 +1501,14 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
         case "toggleGroup":
           return void (await setCollapsed([command.id], !command.open));
         case "foldFolders":
-          return void (await refold({ ...folding, expanded: command.open ? folderIds(bookmarkRoots(tree).map((r) => r.node)) : [] }));
-        case "foldGroups":
-          return void (await setCollapsed((await browser.tabGroups(windowId)).map((g) => g.id), !command.open));
+          return void (await refold(foldedFolders(folding, tree, command.id, command.open, skips, expandAll)));
+        case "skipFolder":
+          return void (await writeSkips({ [command.id]: command.skip }));
+        case "foldGroups": {
+          const [now, all] = await strip();
+          const keep = command.open ? undefined : now.find((t) => t.active)?.groupId;
+          return void (await setCollapsed(all.filter((g) => g.id !== keep).map((g) => g.id), !command.open));
+        }
         case "editGroup":
           return void (await browser.updateGroup(command.id, { title: command.title, ...(command.colour && { colour: command.colour }) }));
         case "newTabInGroup": {

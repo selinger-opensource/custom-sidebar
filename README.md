@@ -9,21 +9,24 @@ On a laptop, Chrome's vertical tabs plus its bookmarks panel take about 600 px o
 **Bookmarks**
 - Chrome's own bookmarks, nothing separate to sync: the bookmarks bar inline, folders that expand, "Other bookmarks" as a folder.
 - Click to open in this window; ⌘/Ctrl-click or middle-click opens in the background.
-- **Edit in place:** drag to move bookmarks and folders; drag a tab in to save it; right-click for **Edit** (title and URL), **Delete**, **New folder** and **Add current tab**.
+- **Edit in place:** drag to move bookmarks and folders; drag a tab in to save it; right-click for **Edit** (title and URL), **Delete**, **New folder** and **Add current tab**. A tab dropped on a folder (or the Bookmarks heading) goes last in it, or first if you choose in the options; the drop mark says which.
+- **Sort by name** from a folder's right-click menu (or the Bookmarks heading's, for the bookmarks bar), as in Chrome's bookmark manager: folders first, then bookmarks, each alphabetically in your language's order; only that folder, not its subfolders. One Undo puts the old order back.
 - **Open a folder's bookmarks** from its right-click menu, as on Chrome's bookmark bar: **Open All (N)**, **in New Window**, **in Incognito Window** or **in New Tab Group**. N counts the folder's own bookmarks, not its subfolders'. The tab group is named after the folder and takes its folder colour if it has one; its name editor opens, as in Chrome. From 15 bookmarks on, the menu asks first.
 - **Undo** the last change from the footer, or with ⌘/Ctrl+Z.
 - **Icons:** give any bookmark or folder an emoji (a grid of common ones, or any emoji from your system's emoji picker), or give a folder a colour (Chrome's tab-group colours).
 
 **Tabs**
 - The tabs of the window the panel sits in, as Chrome's tab strip has them: pinned tabs first (marked with a pin), each **tab group** as a pill in its colour with its tabs indented under it, and ungrouped tabs where they sit. Click to switch, × or middle-click to close, plus a New tab row. Each window has its own panel.
-- **Groups expand and collapse** with a click on their pill, together with Chrome's own: collapse one in the panel and it collapses on the tab strip, and the other way round. The button beside the broom expands or collapses them all. Collapsing the group with the selected tab selects the nearest tab outside it first, as the tab strip does.
+- **Groups expand and collapse** with a click on their pill, together with Chrome's own: collapse one in the panel and it collapses on the tab strip, and the other way round. The button beside the broom expands them all, or collapses all but the group of the tab you're on ("Collapse other groups"), so you can tidy the view and keep working. Collapsing the group with the selected tab selects the nearest tab outside it first, as the tab strip does.
 - **Right-click a group** for Chrome's group commands: **Name and colour…**, **New tab in group**, **Move group to new window**, **Save group to bookmarks**, **Close group**, **Ungroup** and **Delete group**.
 - **Right-click a tab** for Chrome's tab commands that extensions can carry out: **New tab below**, **Add tab to (new) group**, **Remove from group**, **Move tab to new window / another window**, **Reload**, **Duplicate**, **Pin / Unpin**, **Mute / Unmute tab**, **Split view** (Chrome 155 and later), **Close**, **Close other tabs**, **Close tabs below**, **Bookmark tab**, **Bookmark all tabs** and **Copy link**. Close other tabs and Close tabs below work like Chrome's: pinned tabs stay, a group they close entirely stays in Chrome's saved tab groups, and Undo reopens the rest.
+- **Move tabs and groups** by dragging them among the tabs, as on Chrome's vertical tab strip: reorder within a group, drop beside another group's tabs to move into it, onto a group's pill to add it last, above the pill or among the ungrouped tabs to take it out. Drag a pill to move the whole group (never into another group). Pinned tabs reorder among themselves; a split view moves as a pair. **Alt+↑/↓** moves the focused tab or group one step, the way Chrome's keyboard tab move does (at a group's edge a tab first leaves the group; beside an expanded group it joins it; a collapsed group it jumps over). The same drag dropped in Bookmarks saves instead.
 - **Drag a group into Bookmarks** to save it there as a folder in its colour, with its tabs as bookmarks; the group stays open. One Undo removes the folder.
-- **Tidy:** the broom on the Tabs heading closes the tabs that aren't in a group, except the selected one; pinned tabs and grouped tabs stay. Undo reopens them where they were (without their back history; Chrome's own *Reopen closed tab* still has that).
+- **Tidy:** the broom on the Tabs heading closes the tabs that aren't in a group, except the selected one; pinned tabs and grouped tabs stay. The number beside it is how many it would close (hover it for the window's total). Undo reopens them where they were (without their back history; Chrome's own *Reopen closed tab* still has that).
 
 **Everything else**
 - Both sections fold, and the panel remembers which folders are open.
+- **Expand all, a level at a time:** the button on the Bookmarks heading opens the top-level folders, and the same button at the right of any folder with subfolders opens that folder's subfolders (hover a folder for how many items it holds). Once that level is open the button collapses instead, closing everything below it in one click. In the options, **Expand all opens** can be set to **Every level**. Right-click a folder and tick **Don't expand with Expand all** to have the buttons pass it by (it still opens when you click it, and still closes on collapse).
 - Live updates from Chrome's events; nothing polls.
 - Two colour treatments, **Neutral** (like Chrome, the default) and **Warm**, each following your system's light or dark mode.
 - **Optional nightly sweep** (off by default): once a day at 03:00, or the first time Chrome runs after that, it closes tabs you haven't used in the last 3 hours. It keeps the selected tab of the focused window, tabs playing audio, pinned tabs and tabs in a group, never closes a window, and never touches bookmarks.
@@ -41,7 +44,7 @@ There's no Chrome Web Store listing; you load it yourself. Chrome 150 or newer.
 
 **Recommended layout:** in Chrome's settings, put the **side panel on the left**, and if you use vertical tabs, collapse them to the narrow icon rail. An extension can't hide Chrome's own tab strip, so your tabs appear both there and in the panel.
 
-**Updating:** Chrome knows an unpacked extension by its folder. Replace the folder's contents with the new version's files and click the reload icon on the extension's card at `chrome://extensions`; your settings and icons stay. (Removing the extension and loading a new folder also works, but starts with fresh settings.)
+**Updating:** Chrome knows an unpacked extension by its folder. Replace the folder's contents with the new version's files and click the reload icon on the extension's card at `chrome://extensions`; your settings and icons stay. (Removing the extension and loading a new folder also works, but starts with fresh settings: Chrome deletes an extension's stored data when it's removed. Export a backup in the options first, then Import it.)
 
 ## Rename it on build
 
@@ -70,14 +73,19 @@ Then load `dist/extension` at `chrome://extensions` (**Developer mode** → **Lo
 | Close a tab | × or middle-click | Delete or Backspace |
 | Pin, mute, group, move, duplicate, reload, split, close others/below, bookmark or copy a tab | right-click the tab | Shift+F10 (or the menu key) |
 | Expand or collapse a group | click its pill | Enter, Space or → / ← |
-| Expand or collapse all bookmark folders | the button on the Bookmarks heading | Tab to it, then Space |
-| Expand or collapse all groups | the button beside the broom | Tab to it, then Space |
+| Move a tab or group on the tab strip | drag it among the tabs (onto a pill: into that group) | ⌥/Alt+↑ / ↓ |
+| Expand the top-level folders, or collapse every folder | the button on the Bookmarks heading | Tab to it, then Space; or Shift+→ / Shift+← on the heading |
+| Expand a folder's subfolders, or collapse everything in it | the button at the right of the folder | Shift+→ / Shift+← on the folder |
+| Expand a folder and its siblings (the level it's on) | | * |
+| Leave a folder out of Expand all | right-click the folder → Don't expand with Expand all | Shift+F10 → Don't expand with Expand all |
+| Expand all groups, or collapse all but the selected tab's | the button beside the broom | Tab to it, then Space |
 | Rename or recolour a group | right-click → Name and colour… | F2 |
 | A group's other commands (new tab, move, save, close, ungroup, delete) | right-click the group | Shift+F10 |
 | Edit a bookmark or folder (title, URL, icon) | right-click → Edit… | F2 |
 | Delete a bookmark or folder | right-click → Delete | Delete or Backspace |
 | Move a bookmark or folder | drag | ⌥/Alt+↑ / ↓ within its folder |
 | Open a folder's bookmarks (here, new window, incognito, new tab group) | right-click the folder → Open All … | Shift+F10 → Open All … |
+| Sort a folder (or the bookmarks bar) by name | right-click the folder (or the Bookmarks heading) → Sort by name | Shift+F10 → Sort by name |
 | Save a tab as a bookmark | drag the tab into Bookmarks, or right-click → Add current tab | Shift+F10 → Add current tab |
 | Save a group as a bookmark folder | drag its pill into Bookmarks, or right-click → Save group to bookmarks | Shift+F10 → Save group to bookmarks |
 | Tidy (close the ungrouped tabs but the selected one; pinned tabs stay) | the broom on the Tabs heading | Tab to the broom, then Space |
@@ -92,8 +100,11 @@ In the editor, Enter saves and Escape cancels. Click the icon left of the name t
 Open them with the ⚙ at the bottom of the panel:
 
 - **Colours:** Neutral or Warm.
+- **Expand all opens one level at a time (default) or every level:** what the expand buttons on the Bookmarks heading and on folders open. Every level never goes into a folder marked Don't expand with Expand all.
+- **New bookmarks go at the bottom (default) or at the top** of the folder, or of the bookmarks bar, wherever the panel picks the spot: a tab or group dropped on a folder or on the Bookmarks heading, and **Bookmark tab**, **Bookmark all tabs**, **Save group to bookmarks**, **Add current tab** and **New folder**. A drop between two bookmarks goes exactly there, and moving a bookmark into a folder always puts it last.
 - **Site icons (off by default):** Chrome only has icons for pages you've visited, so a bookmark you've never opened shows a globe. Switch this on and the panel asks those bookmarks' own sites for their icon instead. What that means for privacy is described in [SECURITY.md](SECURITY.md).
 - **Nightly sweep (off by default):** the tab sweep described above.
+- **Backup:** **Export…** saves your bookmark icons and folder colours, the folders marked Don't expand with Expand all, these settings and which folders are open to a JSON file (`<name>-backup-<date>.json`); **Import…** puts them back. Each icon is saved with its bookmark's title and address (a folder's: its title and the folders above it), so Import finds the bookmark again even if its ID changed (another profile, or a bookmark deleted and re-added), and skips an icon rather than guess when no single bookmark matches. Import adds to what's there: icons on other bookmarks stay. Nothing else is in the file: no site-icon lookups, no sweep history.
 
 ## Privacy and permissions
 
@@ -106,7 +117,7 @@ Everything stays on your machine. There are no host permissions, no content scri
 | `tabs` | Titles and URLs of the panel's window. Chrome warns "Read your browsing history". |
 | `favicon` | Site icons from Chrome's local favicon cache. |
 | `tabGroups` | Show this window's tab groups, and expand, collapse, rename, recolour and move them from the panel. Chrome warns "View and manage your tab groups". |
-| `storage` | Settings, open folders, your bookmark icons, and the sweep's counts-only receipts, on your machine. |
+| `storage` | Settings, open folders, your bookmark icons and Expand all marks, and the sweep's counts-only receipts, on your machine. |
 | `alarms`, `webNavigation` | The nightly sweep: a periodic "is it due?" check, and counting navigations as use. |
 
 ## Known limits
@@ -114,6 +125,7 @@ Everything stays on your machine. There are no host permissions, no content scri
 - Chrome's side panel is at least 378 px wide and has its own 49 px header; no extension can change either.
 - Another extension's side panel replaces this one in that window until you click the icon again, and Chrome doesn't reopen side panels after a restart.
 - Pinned tabs show as rows with a pin, not as Chrome's compact icons.
+- Moving a split view re-creates the split after the move (Chrome's API ends a split whenever its tabs move), so a custom split ratio resets. Pinned and unpinned tabs can't be dragged across each other; Pin / Unpin in the tab menu does that.
 - Open All in New Tab Group avoids the names of open groups ("Work (1)"), but can't see Chrome's closed saved groups, which Chrome also avoids. Open All in Incognito Window opens the window but, as the extension is kept out of incognito, it can't see or change it afterwards.
 - The tab menu leaves out what extensions can't do or would need a broader permission for: **Reopen closed tab** (the `sessions` permission would change Chrome's warning to "Read your browsing history on all your signed-in devices"; Undo covers the panel's own closes), **Mute site** (a site setting needs the `contentSettings` permission and its warning; Mute tab mutes just the tab), **Send to your devices** and **Share** (no extension API). Copy link needs no clipboard permission: it copies from your click.
 - Extensions only see open tab groups, not Chrome's saved ones: a closed group leaves the panel (reopen it from Chrome's tab groups menu). Chrome's API has no "close group", so Close group moves the group into a minimized window of its own and closes that window, which is how Chrome keeps a group saved. Chrome's *Reopen closed tab* then brings back that window.
@@ -133,6 +145,7 @@ pnpm rename                # back to the default name, Custom Sidebar
 
 - `extension/src/sidebar.ts`: rows, keyboard, bookmark edits, tab groups, Undo and Tidy, behind the `SidebarBrowser` seam. `sidebar-chrome.ts` is the Chrome adapter; the tests use an in-memory fake.
 - `extension/src/sweep.ts`: the nightly sweep, behind the `Browser` seam (`chrome-browser.ts`).
+- `extension/src/backup.ts`: the options page's Export and Import (building, checking and matching a backup), pure.
 - `panel.ts`, `options.ts`, `background.ts`: rendering and wiring.
 - `GLOSSARY.md`: the project's vocabulary (Sidebar, Bookmark edit, Tidy, …).
 - `scripts/sidebar-feasibility.mjs` and `scripts/feasibility.mjs` drive [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/) with throwaway profiles and synthetic pages: `CFT_BIN=<binary> pnpm sidebar:measure`. On macOS, `HARNESS_BACKGROUND=1` keeps the test browser behind your work (the shortcut trigger is then skipped, since Chrome sends shortcuts only to a focused window). Never point them at your own Chrome profile.

@@ -6,7 +6,8 @@
 - **Tabs:** titles and URLs of the window the side panel sits in, to list them. The nightly sweep reads only tab IDs, activity times and audio state.
 - **Storage:** settings, which folders are expanded, and the sweep's counts-only receipts, in `chrome.storage` on your machine.
 
-- **Bookmark icons** you choose (emoji or folder colours) are kept in `chrome.storage` on your machine; they don't sync.
+- **Bookmark icons** you choose (emoji or folder colours), and which folders you marked "Don't expand with Expand all", are kept in `chrome.storage` on your machine; they don't sync.
+- **Backups** exist only if you click Export in the options: a JSON file saved where you choose, holding your settings, which folders are open, and each icon with its bookmark's title and address (or a folder's title and the folders above it), so it reveals those bookmarks to anyone who reads the file. Import reads only a file you pick.
 - **Site-icon lookups** (only with site icons switched on): which icon address each looked-up site gave (or that it had none) is remembered in `chrome.storage`, reused for up to 7 days so reopening the panel skips the lookup while the result is fresh (displaying a remembered icon may still contact the site if Chrome needs to fetch or revalidate the image), and deleted when the panel next opens after that, or at once when you switch site icons off.
 - **Tab activity times** for the nightly sweep: tab IDs and the time each was last used, in Chrome's in-memory session storage (no URLs or titles; gone when Chrome quits). This is recorded even while the sweep is off.
 

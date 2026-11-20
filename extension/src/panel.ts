@@ -1,7 +1,7 @@
 // Side panel page: renders the Sidebar's rows and turns clicks and keys into its commands.
 // Rendering only — what rows exist and what a key does live in sidebar.ts.
-import { COLOUR_TREATMENT_KEY, SITE_ICONS_KEY, SITE_MEMORY_PREFIX, colourTreatment, siteIcons } from "./settings";
-import { FOLDER_COLOURS, NO_GROUP, OPEN_ALL_ASK_FROM, addPlace, canSplitWith, openAllUrls, dropPlace, folderColour, folderIcon, iconText, keyResult, siteIconUrls, openSidebar, rowCommand, type Command, type DragSource, type FolderColour, type OpenAllWhere, type WindowInfo, type DropZone, type KeyResult, type Place, type Row, type Sidebar } from "./sidebar";
+import { COLOUR_TREATMENT_KEY, EXPAND_ALL_KEY, NEW_BOOKMARKS_KEY, SITE_ICONS_KEY, SITE_MEMORY_PREFIX, colourTreatment, expandAllMode, newBookmarksAt, siteIcons, type ExpandAll, type NewBookmarksAt } from "./settings";
+import { FOLDER_COLOURS, NO_GROUP, OPEN_ALL_ASK_FROM, addPlace, canSplitWith, openAllUrls, stripDrop, dropPlace, folderColour, folderIcon, iconText, keyResult, siteIconUrls, openSidebar, rowCommand, sortable, type Command, type DragSource, type FolderColour, type FoldState, type OpenAllWhere, type StripMove, type WindowInfo, type DropZone, type KeyResult, type Place, type Row, type Sidebar } from "./sidebar";
 import { chromeSidebar } from "./sidebar-chrome";
 
 const app = document.getElementById("app")!;
@@ -102,21 +102,30 @@ const forgetSite = (origin: string) => chrome.storage.local.remove(SITE_MEMORY +
  *  no key on the heading itself: one stray Delete would close the window's tabs). */
 const tidyButton = (n: number) =>
   n > 0 ? `<button class="icon-btn tidy" data-tidy aria-label="Close ${n} ungrouped tab${n === 1 ? "" : "s"}" title="Close ungrouped tabs (${n})">${ICON.tidy}</button>` : "";
+/** The Tabs heading's number is what Tidy would close; its tooltip and name say so, with the total. */
+const tabsSummary = (tidy: number, total: number) =>
+  `${tidy} ungrouped tab${tidy === 1 ? "" : "s"} Tidy would close · ${total} tab${total === 1 ? "" : "s"} in this window`;
 /** Expand or collapse every group, beside Tidy, when the window has groups: collapses while any
- *  is expanded, else expands. */
-const groupsButton = (groups: { total: number; open: number } | undefined) => {
+ *  but the selected tab's group is expanded (and leaves that one open), else expands. */
+const groupsButton = (groups: { total: number; open: number; selected?: true } | undefined) => {
   if (!groups) return "";
   const expand = groups.open === 0;
-  const label = expand ? "Expand all groups" : "Collapse all groups";
+  const label = expand ? "Expand all groups" : groups.selected ? "Collapse other groups" : "Collapse all groups";
   return `<button class="icon-btn tidy" data-groups="${expand ? "expand" : "collapse"}" aria-label="${label}" title="${label}">${expand ? ICON.unfold : ICON.fold}</button>`;
 };
-/** Expand or collapse every Bookmark folder, on the Bookmarks heading: collapses while any is
- *  expanded, else expands. */
-const foldersButton = (folders: { total: number; open: number } | undefined) => {
-  if (!folders) return "";
-  const expand = folders.open === 0;
-  const label = expand ? "Expand all folders" : "Collapse all folders";
-  return `<button class="icon-btn tidy" data-folders="${expand ? "expand" : "collapse"}" aria-label="${label}" title="${label}">${expand ? ICON.unfold : ICON.fold}</button>`;
+/** Expand all (GLOSSARY.md) on the Bookmarks heading: opens the top-level folders (every level,
+ *  if so set), or closes every folder. */
+const foldersButton = (state: FoldState | undefined) => {
+  if (!state) return "";
+  const label = state === "collapse" ? "Collapse all folders" : expandAll === "every" ? "Expand all folders" : "Expand top-level folders";
+  return `<button class="icon-btn tidy" data-folders="${state}" aria-label="${label}" title="${label}">${state === "expand" ? ICON.unfold : ICON.fold}</button>`;
+};
+/** Expand all on a folder with subfolders, where its count was: opens its subfolders (every level
+ *  below, if so set), or closes every folder below it. Not a Tab stop (Shift+→ / Shift+← on the row). */
+const foldButton = (row: Extract<Row, { kind: "folder" }>) => {
+  if (!row.fold) return "";
+  const title = row.fold === "collapse" ? "Collapse subfolders" : expandAll === "every" ? "Expand all subfolders" : "Expand subfolders";
+  return `<button class="icon-btn fold" tabindex="-1" data-fold="${esc(row.id)}" data-state="${row.fold}" aria-label="${esc(`${title} of ${row.title || "folder"}`)}" title="${title}">${row.fold === "expand" ? ICON.unfold : ICON.fold}</button>`;
 };
 const emoji = (icon: string) => `<span class="emoji" aria-hidden="true">${esc(icon)}</span>`;
 const FOLDER_FILLED = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.6c0-.6.5-1.1 1.1-1.1h3l1.4 1.4h5.4c.6 0 1.1.5 1.1 1.1v5.4c0 .6-.5 1.1-1.1 1.1H3.1c-.6 0-1.1-.5-1.1-1.1z"/></svg>`;
@@ -131,9 +140,12 @@ function rowHtml(row: Row): string {
   const draggable = row.kind === "tab" || row.kind === "group" || ((row.kind === "folder" || row.kind === "bookmark") && !row.locked);
   const attrs = `data-key="${esc(row.key)}" tabindex="-1"${draggable ? ' draggable="true"' : ""}`;
   switch (row.kind) {
-    case "section":
-      return `<div class="section-head${row.section === "tabs" ? " sticky" : ""}" role="button" aria-expanded="${row.open}" ${attrs}>
-        ${ICON.chev}<span>${row.label}</span><span class="grow"></span>${foldersButton(row.folders)}${groupsButton(row.groups)}${tidyButton(row.tidy ?? 0)}<span class="count">${row.count ?? ""}</span></div>`;
+    case "section": {
+      const summary = row.section === "tabs" ? tabsSummary(row.count ?? 0, row.total ?? 0) : undefined;
+      const named = summary === undefined ? "" : ` aria-label="${esc(`${row.label}: ${summary}`)}"`;
+      return `<div class="section-head${row.section === "tabs" ? " sticky" : ""}" role="button" aria-expanded="${row.open}"${named} ${attrs}>
+        ${ICON.chev}<span>${row.label}</span><span class="grow"></span>${foldersButton(row.folders)}${groupsButton(row.groups)}${tidyButton(row.tidy ?? 0)}<span class="count"${summary === undefined ? "" : ` title="${esc(summary)}"`}>${row.count ?? ""}</span></div>`;
+    }
     case "group": {
       // A coloured pill, as on Chrome's tab strip; an untitled one shows no name, just its count.
       const name = row.title || "Unnamed group";
@@ -143,8 +155,8 @@ function rowHtml(row: Row): string {
         <span class="label">${esc(row.title)}</span>${hidden}<span class="folder-count">${row.count}</span>${ICON.chev}</div>`;
     }
     case "folder":
-      return `<div class="row folder" role="treeitem" aria-level="${row.depth + 1}" aria-expanded="${row.open}" style="--depth:${row.depth}" title="${esc(row.title)}" ${attrs}>
-        ${ICON.chev}<span class="ico">${row.icon !== undefined ? iconHtml(row.icon) : ICON.folder}</span><span class="label">${esc(row.title)}</span><span class="folder-count">${row.count}</span></div>`;
+      return `<div class="row folder" role="treeitem" aria-level="${row.depth + 1}" aria-expanded="${row.open}" style="--depth:${row.depth}" title="${esc(`${row.title}\n${row.count} item${row.count === 1 ? "" : "s"}`)}" ${attrs}>
+        ${ICON.chev}<span class="ico">${row.icon !== undefined ? iconHtml(row.icon) : ICON.folder}</span><span class="label">${esc(row.title)}</span>${foldButton(row)}</div>`;
     case "bookmark":
       return `<div class="row bookmark" role="treeitem" aria-level="${row.depth + 1}" style="--depth:${row.depth}" title="${esc(`${row.title}\n${host(row.url)}`)}" ${attrs}>
         <span class="leaf-pad"></span>${row.icon !== undefined ? `<span class="ico">${iconHtml(row.icon)}</span>` : favicon(row.url, true)}<span class="label">${esc(row.title)}</span></div>`;
@@ -258,6 +270,11 @@ app.addEventListener("click", (e) => {
     e.stopPropagation();
     return void sidebar.run({ type: "foldFolders", open: folders.dataset.folders === "expand" }).catch(report);
   }
+  const fold = e.target instanceof Element ? e.target.closest<HTMLElement>("[data-fold]") : null;
+  if (fold) {
+    e.stopPropagation();
+    return void sidebar.run({ type: "foldFolders", open: fold.dataset.state === "expand", id: fold.dataset.fold! }).catch(report);
+  }
   const groups = e.target instanceof Element ? e.target.closest<HTMLElement>("[data-groups]") : null;
   if (groups) {
     e.stopPropagation();
@@ -351,8 +368,8 @@ async function openParent(at: Place): Promise<void> {
 
 /** A row menu entry, or "-" between groups of them. `editor`: it opens the inline editor, which
  *  takes the focus. `sub`: a submenu instead of an action, shown in the menu's place. `colour`: a
- *  tab group's, as a dot before the label. */
-type MenuEntry = { label: string; run?: () => void; editor?: true; sub?: MenuEntry[]; colour?: FolderColour } | "-";
+ *  tab group's, as a dot before the label. `checked`: a checkbox item, ✓ when on. */
+type MenuEntry = { label: string; run?: () => void; editor?: true; sub?: MenuEntry[]; colour?: FolderColour; checked?: boolean } | "-";
 /** No separator first, last or twice in a row. */
 const separated = (entries: MenuEntry[]) =>
   entries.filter((e, i, all) => e !== "-" || (i > 0 && i < all.length - 1 && all[i - 1] !== "-" && all.slice(i + 1).some((x) => x !== "-")));
@@ -367,7 +384,7 @@ function menuItems(key: string, windows: WindowInfo[] = []): MenuEntry[] {
     items.push({ label: "Edit…", run: () => openEditor(key), editor: true });
     items.push({ label: "Delete", run: () => apply(keyResult(sidebar.rows(), key, "Delete")) });
   }
-  const at = addPlace(rows, key);
+  const at = addPlace(rows, key, newAt);
   if (at) {
     if (items.length > 0 && items.at(-1) !== "-") items.push("-");
     items.push({ label: "New folder", run: () => void openParent(at).then(() => sidebar.run({ type: "newFolder", at, title: "New folder" })).then((id) => {
@@ -376,6 +393,14 @@ function menuItems(key: string, windows: WindowInfo[] = []): MenuEntry[] {
       scheduleRender();
     }).catch(report) });
     items.push({ label: "Add current tab", run: () => void openParent(at).then(() => sidebar.run({ type: "addCurrentTab", at })).catch(report) });
+  }
+  if (row?.kind === "folder") {
+    const skip = row.skip === true;
+    items.push("-", { label: "Don't expand with Expand all", checked: skip, run: () => void sidebar.run({ type: "skipFolder", id: row.id, skip: !skip }).catch(report) });
+  }
+  if (sortable(row)) {
+    const id = row?.kind === "section" ? row.barId! : (row as Editable).id;
+    items.push("-", { label: "Sort by name", run: () => void sidebar.run({ type: "sortFolder", id }).catch(report) });
   }
   return separated(items);
 }
@@ -409,13 +434,14 @@ function openAllMenu(id: string): MenuEntry[] {
 
 /** Chrome's own group menu, as far as extensions can reach it. Close group keeps it in Chrome's
  *  saved tab groups; Ungroup and Delete group take it out, as in Chrome. Save group to bookmarks
- *  puts it first in the bookmarks bar (as the Bookmarks heading's Add current tab does). */
+ *  puts it in the bookmarks bar, first or last as New bookmarks go (as the Bookmarks heading's Add
+ *  current tab does). */
 function groupMenu(row: GroupRow, rows: Row[]): MenuEntry[] {
   const run = (command: Command) => () => void sidebar.run(command).catch(report);
   const id = row.id;
   const head = rows.find((r) => r.key === "s:tabs");
-  const whole = head?.kind === "section" && head.count === row.count; // Chrome can't move all of a window's tabs out
-  const bar = addPlace(rows, "s:bookmarks");
+  const whole = head?.kind === "section" && head.total === row.count; // Chrome can't move all of a window's tabs out
+  const bar = addPlace(rows, "s:bookmarks", newAt);
   return [
     { label: "Name and colour…", run: () => openEditor(row.key), editor: true },
     "-",
@@ -449,7 +475,7 @@ function tabMenu(row: TabRow, rows: Row[], windows: WindowInfo[]): MenuEntry[] {
     }).catch(report);
   const others = (from: number) => tabs.some((t, j) => j >= from && t.id !== id && !t.pinned && !(tab.splitViewId !== undefined && t.splitViewId === tab.splitViewId));
   const active = tabs.find((t) => t.active);
-  const bar = addPlace(rows, "s:bookmarks");
+  const bar = addPlace(rows, "s:bookmarks", newAt);
   const tabsLabel = (n: number) => (n > 1 ? ` and ${n - 1} more tab${n === 2 ? "" : "s"}` : "");
   return separated([
     { label: "New tab below", run: run({ type: "newTabBelow", id }) },
@@ -535,12 +561,18 @@ function openMenu(key: string, x?: number, y?: number, windows: WindowInfo[] = [
         menu.append(Object.assign(document.createElement("div"), { className: "menu-sep", role: "separator" }));
         continue;
       }
-      const dot = entry.colour ? `<span class="menu-dot" data-colour="${entry.colour}" aria-hidden="true"></span>` : "";
+      const dot = entry.colour
+        ? `<span class="menu-dot" data-colour="${entry.colour}" aria-hidden="true"></span>`
+        : entry.checked !== undefined ? `<span class="menu-check" aria-hidden="true">${entry.checked ? "✓" : ""}</span>` : "";
       const item = button(entry.label, () => {
         if (entry.sub) return fill(entry.sub, { label: entry.label, entries });
         closeOverlay(entry.editor ? undefined : key);
         entry.run?.();
       }, dot);
+      if (entry.checked !== undefined) {
+        item.setAttribute("role", "menuitemcheckbox");
+        item.setAttribute("aria-checked", String(entry.checked));
+      }
       if (entry.sub) {
         item.setAttribute("aria-haspopup", "menu");
         item.insertAdjacentHTML("beforeend", '<span class="menu-more" aria-hidden="true">›</span>');
@@ -752,17 +784,21 @@ function iconPicker(choose: (icon: string | null) => void, cancel: () => void, k
   return box;
 }
 
-// --- Drag and drop: bookmarks and folders move, a tab or group dropped in Bookmarks is saved there.
+// --- Drag and drop: bookmarks and folders move, a tab or group dropped in Bookmarks is saved there,
+// and tabs and groups move on the tab strip when dropped among the tabs.
 const DRAG_TYPE = "application/x-sidebar-row"; // only our own drags; links from pages are ignored
 let dragSource: DragSource | undefined;
 let dropMark: HTMLElement | undefined;
 let expandTimer: ReturnType<typeof setTimeout> | undefined;
 let expandKey: string | undefined;
 
-function markDrop(el: HTMLElement | undefined, zone?: DropZone): void {
+/** `end`: a drop into a folder or the bar that isn't empty says whether it lands first or last. */
+function markDrop(el: HTMLElement | undefined, zone?: DropZone, end?: "top" | "bottom"): void {
   dropMark?.classList.remove("drop-before", "drop-after", "drop-inside");
+  if (dropMark) delete dropMark.dataset.dropEnd;
   dropMark = el;
   if (el && zone) el.classList.add(`drop-${zone}`);
+  if (el && end) el.dataset.dropEnd = end;
 }
 function stopExpand(): void {
   clearTimeout(expandTimer);
@@ -787,13 +823,14 @@ app.addEventListener("dragstart", (e) => {
     e.dataTransfer.setData("text/uri-list", row.url);
     e.dataTransfer.setData("text/plain", row.url);
   }
-  e.dataTransfer.effectAllowed = row.kind === "tab" ? "copyLink" : row.kind === "group" ? "copy" : "copyMove";
+  // A tab or group copies into Bookmarks, moves on the strip; a tab also drops elsewhere as a link.
+  e.dataTransfer.effectAllowed = row.kind === "tab" ? "all" : "copyMove";
   // A render during the drag (a folder opening on hover) replaces this row; its dragend then
   // never bubbles to #app, so listen on the row itself.
   rowOf(e.target)!.addEventListener("dragend", endDrag, { once: true });
 });
 
-/** The row under the pointer and which part of it: a folder's middle half means "inside". */
+/** The row under the pointer and which part of it: a folder's or group header's middle half means "inside". */
 function dropAt(e: DragEvent): { key: string; el: HTMLElement; zone: DropZone } | undefined {
   const el = rowOf(e.target);
   const row = findRow(el?.dataset.key);
@@ -801,23 +838,36 @@ function dropAt(e: DragEvent): { key: string; el: HTMLElement; zone: DropZone } 
   if (row.kind === "section") return { key: row.key, el, zone: "after" };
   const r = el.getBoundingClientRect();
   const y = (e.clientY - r.top) / r.height;
-  const zone: DropZone = row.kind === "folder" ? (y < 0.25 ? "before" : y > 0.75 ? "after" : "inside") : y < 0.5 ? "before" : "after";
+  const zone: DropZone = row.kind === "folder" || row.kind === "group" ? (y < 0.25 ? "before" : y > 0.75 ? "after" : "inside") : y < 0.5 ? "before" : "after";
   return { key: row.key, el, zone };
+}
+
+/** What a drop at `at` does: a Bookmarks place (a move, or a tab or group saved there), or a Strip
+ *  move among the tabs; the same drag picks by where it ends. */
+function dropTarget(source: DragSource, at: { key: string; zone: DropZone }): { place: Place } | { move: StripMove } | undefined {
+  const rows = sidebar.rows();
+  const place = dropPlace(rows, source, at.key, at.zone, newAt);
+  if (place) return { place };
+  const move = stripDrop(rows, sidebar.tabs(), source, at.key, at.zone);
+  return move && { move };
 }
 
 app.addEventListener("dragover", (e) => {
   if (!dragSource || !e.dataTransfer?.types.includes(DRAG_TYPE)) return;
   const at = dropAt(e);
-  const place = at && dropPlace(sidebar.rows(), dragSource, at.key, at.zone);
-  if (!at || !place) {
+  const target = at && dropTarget(dragSource, at);
+  if (!at || !target) {
     markDrop(undefined);
     return stopExpand();
   }
   e.preventDefault();
-  e.dataTransfer.dropEffect = dragSource.kind === "bookmark" ? "move" : "copy";
-  markDrop(at.el, at.key === "s:bookmarks" ? "after" : at.zone);
-  // Hovering inside a closed folder opens it, so you can drop deeper.
+  e.dataTransfer.dropEffect = dragSource.kind === "bookmark" || "move" in target ? "move" : "copy";
+  // Into a folder or the bar (the heading): first or last, as dropPlace chose.
   const row = findRow(at.key);
+  const size = row?.kind === "section" ? row.barCount ?? 0 : row?.kind === "folder" && at.zone === "inside" ? row.count : 0;
+  const end = "place" in target && size > 0 ? (target.place.index === 0 ? "top" : "bottom") : undefined;
+  markDrop(at.el, row?.kind === "section" ? (end ? "inside" : "after") : at.zone, end);
+  // Hovering inside a closed folder opens it, so you can drop deeper.
   if (at.zone === "inside" && row?.kind === "folder" && !row.open) {
     if (expandKey !== at.key) {
       stopExpand();
@@ -839,9 +889,11 @@ app.addEventListener("drop", (e) => {
   const at = dropAt(e);
   endDrag();
   if (!source || !at || !e.dataTransfer?.types.includes(DRAG_TYPE)) return;
-  const place = dropPlace(sidebar.rows(), source, at.key, at.zone);
-  if (!place) return;
+  const target = dropTarget(source, at);
+  if (!target) return;
   e.preventDefault();
+  if ("move" in target) return void sidebar.run({ type: "moveInStrip", move: target.move }).catch(report);
+  const { place } = target;
   if (source.kind === "bookmark") {
     const row = findRow(source.key);
     if (row?.kind === "folder" || row?.kind === "bookmark") void sidebar.run({ type: "moveBookmark", id: row.id, to: place }).catch(report);
@@ -998,19 +1050,31 @@ const applySiteIcons = (stored: unknown) => {
 const applyTreatment = (stored: unknown) => {
   document.documentElement.dataset.treatment = colourTreatment(stored);
 };
+/** New bookmarks go (settings.ts), live from the options page. */
+let newAt: NewBookmarksAt = "bottom";
+/** Expand all opens (settings.ts), live from the options page; the session's rows follow it too. */
+let expandAll: ExpandAll = "level";
+const applyExpandAll = (stored: unknown) => {
+  expandAll = expandAllMode(stored);
+  sidebar?.setExpandAll(expandAll);
+};
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   const change = changes[COLOUR_TREATMENT_KEY];
   if (change) applyTreatment(change.newValue);
   const icons = changes[SITE_ICONS_KEY];
   if (icons) applySiteIcons(icons.newValue);
+  if (changes[NEW_BOOKMARKS_KEY]) newAt = newBookmarksAt(changes[NEW_BOOKMARKS_KEY].newValue);
+  if (changes[EXPAND_ALL_KEY]) applyExpandAll(changes[EXPAND_ALL_KEY].newValue);
 });
 
 void (async () => {
-  const stored = await chrome.storage.local.get([COLOUR_TREATMENT_KEY, SITE_ICONS_KEY]);
+  const stored = await chrome.storage.local.get([COLOUR_TREATMENT_KEY, SITE_ICONS_KEY, NEW_BOOKMARKS_KEY, EXPAND_ALL_KEY]);
   applyTreatment(stored[COLOUR_TREATMENT_KEY]);
+  newAt = newBookmarksAt(stored[NEW_BOOKMARKS_KEY]);
   siteIconsOn = siteIcons(stored[SITE_ICONS_KEY]);
   if (siteIconsOn) await recallSites().catch(report);
   sidebar = await openSidebar(chromeSidebar, scheduleRender);
+  applyExpandAll(stored[EXPAND_ALL_KEY]);
   render();
 })();

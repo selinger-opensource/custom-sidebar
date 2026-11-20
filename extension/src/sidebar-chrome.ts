@@ -3,9 +3,9 @@
 // and Folding change into a SidebarEvent, leaving the filtering to the session in sidebar.ts.
 import { NO_FOLDING, type BookmarkIcons, type BookmarkNode, type Folding, type IconChanges, type ReopenedTab, type SidebarBrowser, type TabInfo } from "./sidebar";
 
-export const FOLDING_KEY = "sidebarFolding";
-/** One storage key per Bookmark icon: `icon:<bookmark id>`. */
-export const ICON_KEY_PREFIX = "icon:";
+import { FOLDING_KEY, ICON_KEY_PREFIX, NO_EXPAND_PREFIX } from "./settings";
+
+export { FOLDING_KEY, ICON_KEY_PREFIX };
 
 // Before its first page commits, a tab's url is "" and pendingUrl has the address.
 const toTabInfo = (t: chrome.tabs.Tab): TabInfo[] =>
@@ -85,6 +85,17 @@ export const chromeSidebar: SidebarBrowser = {
     if (removed.length > 0) await chrome.storage.local.remove(removed);
   },
 
+  async loadSkips() {
+    return Object.entries(await chrome.storage.local.get(null)).flatMap(([key, value]) => (key.startsWith(NO_EXPAND_PREFIX) && value === true ? [key.slice(NO_EXPAND_PREFIX.length)] : []));
+  },
+
+  async saveSkips(changes) {
+    const set = Object.fromEntries(Object.entries(changes).flatMap(([id, on]) => (on ? [[NO_EXPAND_PREFIX + id, true]] : [])));
+    const removed = Object.entries(changes).flatMap(([id, on]) => (on ? [] : [NO_EXPAND_PREFIX + id]));
+    if (Object.keys(set).length > 0) await chrome.storage.local.set(set);
+    if (removed.length > 0) await chrome.storage.local.remove(removed);
+  },
+
   subscribe(listener) {
     const bookmarks = () => listener({ kind: "bookmarks" });
     chrome.bookmarks.onCreated.addListener(bookmarks);
@@ -120,6 +131,11 @@ export const chromeSidebar: SidebarBrowser = {
         if (key.startsWith(ICON_KEY_PREFIX)) icons[key.slice(ICON_KEY_PREFIX.length)] = typeof newValue === "string" ? newValue : null;
       }
       if (Object.keys(icons).length > 0) listener({ kind: "icons", changes: icons });
+      const skips: Record<string, boolean> = {};
+      for (const [key, { newValue }] of Object.entries(changes)) {
+        if (key.startsWith(NO_EXPAND_PREFIX)) skips[key.slice(NO_EXPAND_PREFIX.length)] = newValue === true;
+      }
+      if (Object.keys(skips).length > 0) listener({ kind: "skips", changes: skips });
     });
   },
 
@@ -187,6 +203,18 @@ export const chromeSidebar: SidebarBrowser = {
 
   async unsplit(splitViewId) {
     await chrome.tabs.unsplit(splitViewId);
+  },
+
+  async moveTabs(tabIds, index) {
+    await chrome.tabs.move(tabIds, { index });
+  },
+
+  async moveGroup(groupId, index) {
+    await chrome.tabGroups.move(groupId, { index });
+  },
+
+  async groupInto(tabIds, groupId) {
+    await chrome.tabs.group({ groupId, tabIds: tabIds as [number, ...number[]] });
   },
 
   async openTabs(windowId, urls) {

@@ -11,6 +11,7 @@
   label { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; }
   .hint { color: GrayText; font-size: 13px; margin: 2px 0 0 26px; }
   button.link { all: unset; color: LinkText; text-decoration: underline; cursor: pointer; }
+  .actions { margin: 8px 0 4px; display: flex; gap: 8px; }
 </style>
 <body>
 <fieldset>
@@ -18,6 +19,18 @@
   <label><input type="radio" name="colourTreatment" value="neutral"> Neutral, like Chrome</label>
   <label><input type="radio" name="colourTreatment" value="warm"> Warm</label>
   <p class="hint">Both follow your system's light or dark setting.</p>
+</fieldset>
+<fieldset>
+  <legend>New bookmarks go</legend>
+  <label><input type="radio" name="newBookmarks" value="bottom"> At the bottom</label>
+  <label><input type="radio" name="newBookmarks" value="top"> At the top</label>
+  <p class="hint">Of the folder, or of the bookmarks bar: for a tab or group dropped on a folder or on the Bookmarks heading, and for Bookmark tab, Bookmark all tabs, Save group to bookmarks, Add current tab and New folder. Dropped between two bookmarks, it goes where you drop it.</p>
+</fieldset>
+<fieldset>
+  <legend>Expand all opens</legend>
+  <label><input type="radio" name="expandAll" value="level"> One level at a time</label>
+  <label><input type="radio" name="expandAll" value="every"> Every level</label>
+  <p class="hint">For the expand buttons on the Bookmarks heading and on folders with subfolders. Folders you mark “Don't expand with Expand all” (right-click a folder) are skipped either way; collapsing always closes everything below.</p>
 </fieldset>
 <fieldset>
   <legend>Site icons</legend>
@@ -29,6 +42,12 @@
   <legend>Nightly sweep</legend>
   <label><input type="checkbox" id="sweep"> Close tabs not used in the last 3 hours, once a day at 03:00 or the first time Chrome runs after it</label>
   <p class="hint">Off by default. The selected tab of the focused window, tabs playing audio, pinned tabs and tabs in a group stay open, windows are never closed, and bookmarks are never changed. The first sweep after switching on is the next 03:00.</p>
+</fieldset>
+<fieldset>
+  <legend>Backup</legend>
+  <p class="hint" style="margin-left:0">Your bookmark icons, folder colours, settings and open folders are kept by the extension, so uninstalling it deletes them (reloading it at chrome://extensions keeps them). Export them to a file first; Import puts them back, on the same bookmarks.</p>
+  <p class="actions"><button type="button" id="export">Export…</button> <button type="button" id="import">Import…</button><input type="file" id="importFile" accept=".json,application/json" hidden></p>
+  <p class="hint" style="margin-left:0" id="backupStatus" role="status" aria-live="polite"></p>
 </fieldset>
 <fieldset>
   <legend>Keyboard shortcut</legend>
