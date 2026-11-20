@@ -144,8 +144,8 @@ Issues and pull requests are welcome. This is a small tool, kept deliberately sm
 
 ## About
 
-Custom Sidebar is a fork of Compact Sidebar, which is built and maintained by **[MF Consulting](https://matthiasfrank.de/en/notion-consulting/)**. We help teams work better with Notion and AI, and build custom software when off-the-shelf tools don't fit. If that sounds like something your team needs, [get in touch](https://matthiasfrank.de/en/notion-consulting/).
+Custom Sidebar is a fork of [Compact Sidebar](https://github.com/mf-consulting-opensource/compact-sidebar), built and maintained by [MF Consulting](https://matthiasfrank.de/en/notion-consulting/), and is not affiliated with or endorsed by them. The original provides the bookmarks-above-tabs panel, drag-and-drop editing, icons, Tidy and the nightly sweep. This fork adds tab groups, tab and folder right-click menus, expand/collapse-all buttons, and a build-time rename. See [CHANGELOG.md](CHANGELOG.md) for the differences.
 
 ## License
 
-[MIT](LICENSE) © MF Consulting
+[MIT](LICENSE) © MF Consulting and Mark Selinger

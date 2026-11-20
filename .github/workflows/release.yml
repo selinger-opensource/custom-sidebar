@@ -1,4 +1,4 @@
-# Push a tag like v0.6.0 (matching manifest.json's version) to publish a GitHub Release with
+# Push a tag like v0.7.0 (matching manifest.json's version) to publish a GitHub Release with
 # the built extension as a zip. No Chrome Web Store.
 # Two jobs: the build installs dependencies and runs scripts with read-only access; only the
 # publish step, which runs no project code, may write (create the release).
