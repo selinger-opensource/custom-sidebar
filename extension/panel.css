@@ -118,6 +118,11 @@ svg { flex: none; }
 .menu [role="menuitem"] { all: unset; display: block; width: 100%; box-sizing: border-box; padding: 4px 12px; cursor: default; }
 .menu [role="menuitem"]:hover, .menu [role="menuitem"]:focus { background: var(--hover); }
 .menu-sep { border-top: 1px solid var(--divider); margin: 4px 0; }
+.menu [role="menuitem"] { display: flex; align-items: center; gap: 6px; max-width: 300px; }
+.menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.menu-more { margin-left: auto; padding-left: 12px; color: var(--muted); }
+.menu-back { color: var(--muted); }
+.menu-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--group); flex: none; }
 
 /* ---- Drag and drop ---------------------------------------------------------------------- */
 .row.drop-before::before, .row.drop-after::after, .section-head.drop-after::after {
@@ -181,6 +186,35 @@ svg { flex: none; }
 .colour-row { display: grid; grid-template-columns: repeat(9, 1fr); gap: 2px; margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--divider); }
 .colour-row button { all: unset; height: 26px; border-radius: 6px; display: grid; place-items: center; }
 .colour-row button:hover, .colour-row button:focus-visible { background: var(--hover); box-shadow: inset 0 0 0 2px var(--focus); }
+
+/* ---- Tab groups: coloured pills and their tabs' accent, as on Chrome's tab strip ---------- */
+[data-colour="grey"] { --group: var(--folder-grey); }
+[data-colour="blue"] { --group: var(--folder-blue); }
+[data-colour="red"] { --group: var(--folder-red); }
+[data-colour="yellow"] { --group: var(--folder-yellow); }
+[data-colour="green"] { --group: var(--folder-green); }
+[data-colour="pink"] { --group: var(--folder-pink); }
+[data-colour="purple"] { --group: var(--folder-purple); }
+[data-colour="cyan"] { --group: var(--folder-cyan); }
+[data-colour="orange"] { --group: var(--folder-orange); }
+/* Light: white on the deep colours, dark on yellow and orange. Dark: the colours are pale, so dark text on all. */
+.group { --on-group: #fff; }
+.group[data-colour="yellow"], .group[data-colour="orange"] { --on-group: #1f1f1f; }
+@media (prefers-color-scheme: dark) { .group { --on-group: #1f1f1f; } }
+.row.group { margin: 2px 4px; padding: 0 6px 0 10px; background: var(--group); color: var(--on-group); font-weight: 500; }
+.row.group:hover { background: color-mix(in srgb, var(--group) 88%, var(--text)); }
+.row.group:active { background: color-mix(in srgb, var(--group) 80%, var(--text)); }
+.row.group:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus); }
+.row.group .chev, .row.group .folder-count { color: inherit; opacity: 0.85; }
+.row.group .chev { margin: 0; }
+.group .sel-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.row.group.editing { background: var(--hover); color: var(--text); font-weight: normal; }
+.tab.grouped { padding-left: 22px; }
+.tab.grouped::before {
+  content: ""; position: absolute; left: 11px; top: 2px; bottom: 2px; width: 3px; border-radius: 2px; background: var(--group);
+}
+.icon-picker.colours-only { width: auto; }
+.colours-only .colour-row { margin: 0; padding: 0; border: 0; grid-template-columns: repeat(9, 26px); }
 
 /* ---- Tidy (Tabs heading) ------------------------------------------------------------------ */
 .section-head .tidy { width: 18px; height: 18px; color: var(--muted); margin-right: 2px; }

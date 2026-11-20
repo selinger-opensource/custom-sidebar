@@ -1,5 +1,5 @@
 {
-  "name": "compact-sidebar",
+  "name": "custom-sidebar",
   "private": true,
   "version": "0.6.0",
   "description": "A compact Chrome side panel with your bookmarks above this window's tabs, plus an optional nightly sweep of unused tabs (MV3 extension).",
@@ -12,9 +12,10 @@
     "build": "node scripts/build.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build",
     "privacy": "node scripts/privacy-check.mjs",
+    "rename": "node scripts/rename.mjs",
     "release:zip": "pnpm check && node scripts/release-zip.mjs",
-    "sidebar:measure": "pnpm build && node scripts/sidebar-feasibility.mjs \"$CFT_BIN\" \"${TMPDIR:-/tmp}/compact-sidebar-cft\" measure",
-    "sidebar:demo": "pnpm build && node scripts/sidebar-feasibility.mjs \"$CFT_BIN\" \"${TMPDIR:-/tmp}/compact-sidebar-cft\" demo"
+    "sidebar:measure": "pnpm build && node scripts/sidebar-feasibility.mjs \"$CFT_BIN\" \"${TMPDIR:-/tmp}/custom-sidebar-cft\" measure",
+    "sidebar:demo": "pnpm build && node scripts/sidebar-feasibility.mjs \"$CFT_BIN\" \"${TMPDIR:-/tmp}/custom-sidebar-cft\" demo"
   },
   "devDependencies": {
     "@types/chrome": "0.3.7",

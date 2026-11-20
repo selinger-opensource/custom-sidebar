@@ -1,9 +1,11 @@
 // Bundles the service worker, the side panel and the options page, and copies the static files
-// into dist/extension/ (load it unpacked).
+// into dist/extension/ (load it unpacked). The manifest takes the local name from .sidebar-name
+// when there is one (`pnpm rename`); the pages read the name from the manifest at runtime.
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { localName } from "./sidebar-name.mjs";
 
 const out = "dist/extension";
 const STATIC = ["manifest.json", "panel.html", "panel.css", "options.html", "icons"];
@@ -19,6 +21,12 @@ await build({
   legalComments: "none",
 });
 for (const name of STATIC) await cp(join("extension", name), join(out, name), { recursive: true });
+const name = await localName();
+if (name !== undefined) {
+  const manifest = JSON.parse(await readFile(join(out, "manifest.json"), "utf8"));
+  await writeFile(join(out, "manifest.json"), `${JSON.stringify({ ...manifest, name }, null, 2)}\n`);
+  console.log(`named "${name}" (from .sidebar-name)`);
+}
 
 // Print a content hash of the build so a review can name the exact artifact.
 const files = (await readdir(out, { recursive: true, withFileTypes: true }))

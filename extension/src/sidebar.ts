@@ -1,5 +1,6 @@
-// Sidebar: native bookmarks (read-only) above the tabs of the window it sits in, as one flat
-// list of rows with a single keyboard focus. Vocabulary: GLOSSARY.md (Sidebar, Folding).
+// Sidebar: native bookmarks (read-only) above the tabs of the window it sits in, grouped as on
+// Chrome's tab strip, as one flat list of rows with a single keyboard focus. Vocabulary:
+// GLOSSARY.md (Sidebar, Folding, Group header, Loose tab).
 //
 // Two halves behind one interface: pure row building and keyboard handling, and a session
 // (openSidebar) that keeps those rows current from browser events and runs commands through
@@ -26,7 +27,37 @@ export interface TabInfo {
   active: boolean;
   audible: boolean;
   pinned: boolean;
+  /** Its tab group, or NO_GROUP. */
+  groupId: number;
+  /** Muted by Chrome's tab mute (not a site setting). */
+  muted?: boolean;
+  /** The Split View it's half of, if any. */
+  splitViewId?: number;
 }
+
+/** Another normal window, as the tab menu's Move tab to another window lists it: named after its
+ *  selected tab, as Chrome's own menu does. */
+export interface WindowInfo {
+  id: number;
+  title: string;
+  tabs: number;
+}
+
+/** A tab in no group (chrome.tabGroups.TAB_GROUP_ID_NONE). */
+export const NO_GROUP = -1;
+/** What a tab group without a title is called where a name is needed (a saved folder, a notice). */
+export const UNTITLED_GROUP = "Untitled group";
+
+/** One open tab group of the Sidebar's window. Its colours are the folder colours. */
+export interface TabGroupInfo {
+  id: number;
+  title: string;
+  colour: FolderColour;
+  collapsed: boolean;
+}
+
+/** A Loose tab (GLOSSARY.md): in no group and not pinned. */
+export const isLoose = (t: TabInfo) => t.groupId === NO_GROUP && !t.pinned;
 
 /** Expanded bookmark folders and folded sections, remembered per profile. */
 export interface Folding {
@@ -82,11 +113,16 @@ export function siteIconUrls(pageUrl: string): string[] {
 }
 
 export type Row =
-  /** `tidy` (Tabs only): how many tabs Tidy would close. */
-  | { kind: "section"; key: string; section: Section; label: string; open: boolean; count?: number; barId?: string; tidy?: number }
+  /** `tidy` (Tabs only): how many tabs Tidy would close. `groups` (Tabs only, when the window has
+   *  any): how many group headers, and how many of them are expanded. */
+  | { kind: "section"; key: string; section: Section; label: string; open: boolean; count?: number; barId?: string; tidy?: number; groups?: { total: number; open: number } }
   | ({ kind: "folder"; key: string; id: string; title: string; depth: number; open: boolean; count: number; parent?: string; icon?: string } & Placed)
   | ({ kind: "bookmark"; key: string; id: string; title: string; url: string; depth: number; parent?: string; savedTitle: string; icon?: string } & Placed)
-  | { kind: "tab"; key: string; id: number; title: string; url: string; active: boolean; audible: boolean }
+  /** A Group header (GLOSSARY.md): `open` is Chrome's own expanded state; `selected`: the
+   *  window's selected tab is one of its `count` tabs. */
+  | { kind: "group"; key: string; id: number; title: string; colour: FolderColour; open: boolean; count: number; selected: boolean }
+  /** `group`/`colour`/`parent`: the group it's in, its colour and its header's row key. */
+  | { kind: "tab"; key: string; id: number; title: string; url: string; active: boolean; audible: boolean; pinned: boolean; muted: boolean; split: boolean; group?: number; colour?: FolderColour; parent?: string }
   | { kind: "newtab"; key: string };
 
 /** Where a bookmark or folder row sits in Chrome's tree: its parent folder, its position among
@@ -106,7 +142,42 @@ export interface Place {
   parentId: string;
   index: number;
 }
-export type DragSource = { kind: "bookmark"; key: string } | { kind: "tab"; id: number };
+/** A group header dropped in Bookmarks saves the group there as a folder (saveGroup). */
+export type OpenAllWhere = "here" | "group" | "window" | "incognito";
+/** Open All asks first from this many bookmarks on (Chromium's kNumBookmarkUrlsBeforePrompting). */
+export const OPEN_ALL_ASK_FROM = 15;
+
+/** Open All's bookmarks, as Chromium's GetURLsToOpen: the folder's own bookmarks, not those in
+ *  its subfolders, in order; for an incognito window only pages incognito can show. */
+export function openAllUrls(tree: BookmarkNode[], folderId: string, incognito = false): string[] {
+  const folder = findNode(tree, folderId);
+  const urls = (folder?.children ?? []).flatMap((n) => (n.url !== undefined ? [n.url] : []));
+  return incognito ? urls.filter(allowedInIncognito) : urls;
+}
+/** Chrome keeps its own pages (settings, extensions, …) and extension pages out of incognito. */
+const allowedInIncognito = (url: string) => !/^(chrome|chrome-extension|chrome-untrusted|javascript):/i.test(url);
+/** What a new tab can open: like Chrome, a javascript: bookmark is counted but not opened. */
+const openable = (url: string) => !/^javascript:/i.test(url);
+
+/** A group title not yet used by an open group: `title`, else `title (1)`, `(2)`, … as Chromium's
+ *  SuggestUniqueTabGroupName (which also sees closed saved groups; extensions can't). */
+export function uniqueGroupTitle(title: string, taken: string[]): string {
+  const used = new Set(taken);
+  if (!used.has(title)) return title;
+  for (let i = 1; i < 100; i++) if (!used.has(`${title} (${i})`)) return `${title} (${i})`;
+  return `${title} (100)`;
+}
+
+function findNode(nodes: BookmarkNode[], id: string): BookmarkNode | undefined {
+  for (const n of nodes) {
+    if (n.id === id) return n;
+    const deeper = findNode(n.children ?? [], id);
+    if (deeper) return deeper;
+  }
+  return undefined;
+}
+
+export type DragSource = { kind: "bookmark"; key: string } | { kind: "tab"; id: number } | { kind: "group"; id: number };
 export type DropZone = "before" | "after" | "inside";
 
 export type Command =
@@ -124,8 +195,47 @@ export type Command =
   | { type: "newFolder"; at: Place; title: string }
   | { type: "addBookmark"; at: Place; title: string; url: string }
   | { type: "addCurrentTab"; at: Place }
-  /** Tidy (GLOSSARY.md): close every tab of this window but the selected one and pinned ones. */
-  | { type: "closeOtherTabs" }
+  /** A tab group as a new folder at `at`: its title (or UNTITLED_GROUP), its tabs as bookmarks
+   *  in tab-strip order, its colour as the folder's Bookmark icon. One Bookmark edit. */
+  | { type: "saveGroup"; id: number; at: Place }
+  /** A tab's folder in Bookmarks: every tab of this window, in tab-strip order (Bookmark all tabs). */
+  | { type: "saveTabs"; at: Place; title: string }
+  /** Tidy (GLOSSARY.md): close this window's Loose tabs but the selected one. */
+  | { type: "tidy" }
+  // The Tab menu (GLOSSARY.md), on one tab of this window.
+  /** Right after it on the strip, in its group if it has one; selected. */
+  | { type: "newTabBelow"; id: number }
+  /** Into the group `groupId`, or a new one (resolves to its id); a pinned tab is unpinned first. */
+  | { type: "groupTab"; id: number; groupId?: number }
+  | { type: "ungroupTab"; id: number }
+  | { type: "moveTabToNewWindow"; id: number }
+  | { type: "moveTabToWindow"; id: number; windowId: number }
+  | { type: "reloadTab"; id: number }
+  | { type: "duplicateTab"; id: number }
+  | { type: "pinTab"; id: number; pinned: boolean }
+  | { type: "muteTab"; id: number; muted: boolean }
+  /** A Split View of the selected tab and this one (moved beside it), or, on the selected tab
+   *  itself, of it and a new tab beside it. */
+  | { type: "splitTab"; id: number }
+  | { type: "unsplitTab"; id: number }
+  /** Close other tabs / Close tabs below (GLOSSARY.md), as Chrome's own. */
+  /** Open All (GLOSSARY.md) of folder `id`: here, in a new group (resolves to its id), in a new
+   *  window, or in a new incognito window. */
+  | { type: "openFolder"; id: string; where: OpenAllWhere }
+  | { type: "closeOthers"; id: number }
+  | { type: "closeBelow"; id: number }
+  // Tab groups, through Chrome's own group state: the rows follow from its events.
+  | { type: "toggleGroup"; id: number; open: boolean }
+  /** Expand every group of the window, or collapse every one. */
+  | { type: "foldGroups"; open: boolean }
+  | { type: "editGroup"; id: number; title: string; colour?: FolderColour }
+  | { type: "newTabInGroup"; id: number }
+  | { type: "moveGroupToNewWindow"; id: number }
+  /** Close group: it stays in Chrome's saved tab groups. Delete group: it leaves them (Undo
+   *  reopens it as a new group). Ungroup: its tabs stay, loose, and it leaves them too. */
+  | { type: "closeGroup"; id: number }
+  | { type: "deleteGroup"; id: number }
+  | { type: "ungroup"; id: number }
   | { type: "undo" };
 
 /** What the footer says after a Bookmark edit; `id` changes with every new notice. */
@@ -199,7 +309,46 @@ function bookmarkRows(nodes: Rooted[], depth: number, expanded: Set<string>, ico
   return rows;
 }
 
-export function sidebarRows(tree: BookmarkNode[], tabs: TabInfo[], folding: Folding, icons: BookmarkIcons = {}): Row[] {
+const tabRow = (t: TabInfo, group?: TabGroupInfo): Row => ({
+  kind: "tab",
+  key: `t:${t.id}`,
+  id: t.id,
+  title: t.title || t.url || "New Tab",
+  url: t.url,
+  active: t.active,
+  audible: t.audible,
+  pinned: t.pinned,
+  muted: t.muted ?? false,
+  split: t.splitViewId !== undefined,
+  ...(group && { group: group.id, colour: group.colour, parent: `g:${group.id}` }),
+});
+
+/** The window's tabs as the tab strip shows them, in its order: a group's tabs (contiguous on the
+ *  strip) under their Group header, hidden while it's collapsed; pinned (always first) and Loose
+ *  tabs on their own. A tab whose group Chrome hasn't reported yet shows as loose until it does. */
+function tabRows(tabs: TabInfo[], groups: TabGroupInfo[]): Row[] {
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  const rows: Row[] = [];
+  for (let i = 0; i < tabs.length; ) {
+    const t = tabs[i]!;
+    const group = t.groupId === NO_GROUP ? undefined : byId.get(t.groupId);
+    if (!group) {
+      rows.push(tabRow(t));
+      i++;
+      continue;
+    }
+    let end = i;
+    while (end < tabs.length && tabs[end]!.groupId === group.id) end++;
+    const members = tabs.slice(i, end);
+    const open = !group.collapsed;
+    rows.push({ kind: "group", key: `g:${group.id}`, id: group.id, title: group.title, colour: group.colour, open, count: members.length, selected: members.some((m) => m.active) });
+    if (open) rows.push(...members.map((m) => tabRow(m, group)));
+    i = end;
+  }
+  return rows;
+}
+
+export function sidebarRows(tree: BookmarkNode[], tabs: TabInfo[], folding: Folding, icons: BookmarkIcons = {}, groups: TabGroupInfo[] = []): Row[] {
   const folded = new Set(folding.folded);
   const head = (section: Section, count?: number): Extract<Row, { kind: "section" }> => ({
     kind: "section",
@@ -212,13 +361,14 @@ export function sidebarRows(tree: BookmarkNode[], tabs: TabInfo[], folding: Fold
   const barId = tree[0]?.children?.find((n) => n.folderType === "bookmarks-bar")?.id;
   const rows: Row[] = [{ ...head("bookmarks"), ...(barId !== undefined && { barId }) }];
   if (!folded.has("bookmarks")) rows.push(...bookmarkRows(bookmarkRoots(tree), 0, new Set(folding.expanded), icons));
-  rows.push({ ...head("tabs", tabs.length), tidy: tabs.filter((t) => !t.active && !t.pinned).length });
-  if (!folded.has("tabs")) {
-    for (const t of tabs) {
-      rows.push({ kind: "tab", key: `t:${t.id}`, id: t.id, title: t.title || t.url || "New Tab", url: t.url, active: t.active, audible: t.audible });
-    }
-    rows.push({ kind: "newtab", key: "newtab" });
-  }
+  const strip = tabRows(tabs, groups);
+  const headers = strip.filter((r) => r.kind === "group");
+  rows.push({
+    ...head("tabs", tabs.length),
+    tidy: tabs.filter((t) => isLoose(t) && !t.active).length,
+    ...(headers.length > 0 && { groups: { total: headers.length, open: headers.filter((r) => r.open).length } }),
+  });
+  if (!folded.has("tabs")) rows.push(...strip, { kind: "newtab", key: "newtab" });
   return rows;
 }
 
@@ -228,7 +378,8 @@ const isPlaced = (row: Row | undefined): row is PlacedRow => row?.kind === "fold
 
 /** Where `source` lands when dropped on row `overKey` in `zone`, or undefined when it can't go
  *  there: into Tabs, beside a root folder, into a locked folder, a folder into itself or below
- *  it, a locked source, or a move that leaves it where it is. */
+ *  it, a locked source, or a move that leaves it where it is. A tab or group header lands like a
+ *  bookmark (as a new bookmark or folder, so without the same-slot rule). */
 export function dropPlace(rows: Row[], source: DragSource, overKey: string, zone: DropZone): Place | undefined {
   const byKey = new Map(rows.map((r) => [r.key, r]));
   const target = byKey.get(overKey);
@@ -277,6 +428,8 @@ export function rowCommand(row: Row): Command {
       return { type: "toggleFolder", id: row.id, open: !row.open };
     case "bookmark":
       return { type: "openBookmark", url: row.url };
+    case "group":
+      return { type: "toggleGroup", id: row.id, open: !row.open };
     case "tab":
       return { type: "selectTab", id: row.id };
     case "newtab":
@@ -302,20 +455,22 @@ function editKey(rows: Row[], row: PlacedRow, key: string, mods: KeyMods): KeyRe
   return undefined;
 }
 
-/** Tree/listbox keyboard: ↑/↓/Home/End move, →/← open or step in / close or step out,
- *  Enter/Space activate, Delete/Backspace close a tab; on bookmarks also the edit keys (editKey),
- *  ⌘Z/Ctrl+Z undo and Shift+F10 or the menu key for the row's menu. */
+/** Tree keyboard: ↑/↓/Home/End move, →/← open or step in / close or step out (a group header
+ *  expands or collapses its group), Enter/Space activate, Delete/Backspace close a tab; on
+ *  bookmarks also the edit keys (editKey), on a group header F2 to rename it; ⌘Z/Ctrl+Z undo and
+ *  Shift+F10 or the menu key for the row's menu. */
 export function keyResult(rows: Row[], focusKey: string, key: string, mods: KeyMods = {}): KeyResult {
   const i = rows.findIndex((r) => r.key === focusKey);
   const row = rows[i];
   if (!row) return {};
   if (mods.meta && !mods.shift && !mods.alt && key.toLowerCase() === "z") return { command: { type: "undo" } };
-  const inBookmarks = isPlaced(row) || (row.kind === "section" && row.section === "bookmarks");
-  if (key === "ContextMenu" || (key === "F10" && mods.shift)) return inBookmarks ? { menu: row.key } : {};
+  const hasMenu = isPlaced(row) || row.kind === "group" || row.kind === "tab" || (row.kind === "section" && row.section === "bookmarks");
+  if (key === "ContextMenu" || (key === "F10" && mods.shift)) return hasMenu ? { menu: row.key } : {};
   if (isPlaced(row)) {
     const edit = editKey(rows, row, key, mods);
     if (edit) return edit;
   }
+  if (row.kind === "group" && key === "F2" && !mods.alt) return { edit: row.key };
   if (mods.alt) return {}; // ⌘/Ctrl still pass: ⌘↵ opens a bookmark in the background
   const at = (j: number) => ({ focus: rows[Math.max(0, Math.min(rows.length - 1, j))]!.key });
   switch (key) {
@@ -332,6 +487,11 @@ export function keyResult(rows: Row[], focusKey: string, key: string, mods: KeyM
       return { command: rowCommand(row) };
     case "ArrowRight":
       if (row.kind === "section" && !row.open) return { command: rowCommand(row) };
+      if (row.kind === "group") {
+        if (!row.open) return { command: rowCommand(row) };
+        const child = rows[i + 1];
+        return child?.kind === "tab" && child.group === row.id ? { focus: child.key } : {};
+      }
       if (row.kind !== "folder") return {};
       if (!row.open) return { command: rowCommand(row) };
       {
@@ -340,8 +500,8 @@ export function keyResult(rows: Row[], focusKey: string, key: string, mods: KeyM
         return inside ? { focus: child.key } : {};
       }
     case "ArrowLeft":
-      if ((row.kind === "section" || row.kind === "folder") && row.open) return { command: rowCommand(row) };
-      if ((row.kind === "folder" || row.kind === "bookmark") && row.parent !== undefined) return { focus: row.parent };
+      if ((row.kind === "section" || row.kind === "folder" || row.kind === "group") && row.open) return { command: rowCommand(row) };
+      if ((row.kind === "folder" || row.kind === "bookmark" || row.kind === "tab") && row.parent !== undefined) return { focus: row.parent };
       return {};
     case "Delete":
     case "Backspace": {
@@ -352,6 +512,26 @@ export function keyResult(rows: Row[], focusKey: string, key: string, mods: KeyM
     default:
       return {};
   }
+}
+
+/** Collapsing a group leaves the selected tab in it selected but hidden (Chrome's API allows it;
+ *  its tab strip doesn't). So, as the tab strip does: before groups collapse, the tab to select —
+ *  the nearest one still shown after the selected tab, else before it — or null when none is
+ *  shown (a New Tab then opens), or undefined when the selected tab stays shown. `hidden`: the
+ *  groups collapsed once done. */
+export function selectionAfterCollapse(tabs: TabInfo[], hidden: Set<number>): number | null | undefined {
+  const i = tabs.findIndex((t) => t.active);
+  const shown = (t: TabInfo) => !hidden.has(t.groupId);
+  if (i < 0 || shown(tabs[i]!)) return undefined;
+  const next = tabs.slice(i + 1).find(shown) ?? tabs.slice(0, i).reverse().find(shown);
+  return next ? next.id : null;
+}
+
+/** Whether splitTab can pair `tab` with the selected tab `active`: neither in a Split View, and
+ *  (for another tab) the same pinned and group state, as chrome.tabs.createSplit requires. */
+export function canSplitWith(tab: TabInfo, active: TabInfo): boolean {
+  if (tab.splitViewId !== undefined || active.splitViewId !== undefined) return false;
+  return tab === active || tab.id === active.id || (tab.pinned === active.pinned && tab.groupId === active.groupId);
 }
 
 // --- Session. -------------------------------------------------------------------------------
@@ -368,6 +548,7 @@ export interface SidebarBrowser {
   currentWindowId(): Promise<number>;
   bookmarkTree(): Promise<BookmarkNode[]>;
   tabs(windowId: number): Promise<TabInfo[]>;
+  tabGroups(windowId: number): Promise<TabGroupInfo[]>;
   loadFolding(): Promise<Folding | undefined>;
   saveFolding(folding: Folding): Promise<void>;
   loadIcons(): Promise<BookmarkIcons | undefined>;
@@ -380,8 +561,43 @@ export interface SidebarBrowser {
   /** Closes tabs one by one; resolves to the IDs that did close. */
   closeTabs(tabIds: number[]): Promise<number[]>;
   /** Opens tabs again, in the background, at their old positions (ascending `index`), each on its
-   *  own; resolves to the ones that couldn't be opened. */
+   *  own, back into their group (its old one if still open, else one new group per old one, with
+   *  its title and colour); resolves to the ones that couldn't be opened. */
   reopenTabs(windowId: number, tabs: ReopenedTab[]): Promise<ReopenedTab[]>;
+  // One tab (the Tab menu). All throw if the tab is gone.
+  /** A new selected tab at `index`, in group `groupId` if given; resolves to its id. */
+  newTabAt(windowId: number, index: number, groupId?: number): Promise<number>;
+  /** Into group `groupId`, or a new group; resolves to the group's id. */
+  groupTab(tabId: number, groupId?: number): Promise<number>;
+  moveTab(tabId: number, windowId: number, index: number): Promise<void>;
+  moveTabToNewWindow(tabId: number): Promise<void>;
+  reloadTab(tabId: number): Promise<void>;
+  duplicateTab(tabId: number): Promise<void>;
+  updateTab(tabId: number, changes: { pinned?: boolean; muted?: boolean }): Promise<void>;
+  /** Whether this Chrome has Split View for extensions (chrome.tabs.createSplit, Chrome 155). */
+  readonly canSplit: boolean;
+  /** Two adjacent tabs with the same pinned and group state into a Split View. */
+  createSplit(tabIds: [number, number]): Promise<void>;
+  unsplit(splitViewId: number): Promise<void>;
+  /** The other normal windows of this profile. */
+  otherWindows(windowId: number): Promise<WindowInfo[]>;
+  // Open All.
+  /** Background tabs at the end of the window, in order; resolves to the ones that opened. */
+  openTabs(windowId: number, urls: string[]): Promise<number[]>;
+  /** One new group of `tabIds`, titled; `colour` if given, else Chrome's own pick. */
+  groupTabs(windowId: number, tabIds: number[], title: string, colour?: FolderColour): Promise<number>;
+  /** A new focused window with `urls` as its tabs, the first selected; incognito if asked. */
+  openWindow(urls: string[], incognito: boolean): Promise<void>;
+  /** The titles of every open tab group, in any window. */
+  groupTitles(): Promise<string[]>;
+  // Tab groups. All throw if the group is gone.
+  updateGroup(groupId: number, changes: { title?: string; colour?: FolderColour; collapsed?: boolean }): Promise<void>;
+  /** The group into a new window of its own, selected. */
+  moveGroupToNewWindow(groupId: number): Promise<void>;
+  /** Closes the groups' tabs so that Chrome keeps them in its saved tab groups (closing the tabs
+   *  one by one would delete them from there). */
+  closeGroups(groupIds: number[]): Promise<void>;
+  ungroupTabs(tabIds: number[]): Promise<void>;
   // Bookmark writes, in chrome.bookmarks' coordinates (see Place). All throw if a node is gone.
   moveBookmark(id: string, to: Place): Promise<void>;
   updateBookmark(id: string, changes: BookmarkFields): Promise<void>;
@@ -395,11 +611,17 @@ export interface SidebarBrowser {
 export interface Sidebar {
   rows(): Row[];
   /** `background`: open a bookmark without selecting it (⌘/Ctrl-click, middle click).
-   *  Resolves to the new node's id for newFolder, addBookmark and addCurrentTab. A Bookmark edit
+   *  Resolves to the new node's id for newFolder, addBookmark, addCurrentTab and saveGroup. A Bookmark edit
    *  that Chrome refuses (its node changed elsewhere) doesn't throw: it sets the notice. */
   run(command: Command, options?: { background?: boolean }): Promise<string | undefined>;
   /** The latest Bookmark edit notice, if any. */
   notice(): Notice | undefined;
+  /** This window's tabs as last read, collapsed groups' included (for the Tab menu). */
+  tabs(): TabInfo[];
+  otherWindows(): Promise<WindowInfo[]>;
+  readonly canSplit: boolean;
+  /** The bookmark tree as last read (for the folder menu's Open All counts). */
+  tree(): BookmarkNode[];
 }
 
 /** A bookmark's editable fields; a missing one isn't changed. */
@@ -408,19 +630,24 @@ export interface BookmarkFields {
   url?: string;
 }
 
-/** A tab Tidy closed: where it was and what it showed. */
+/** A tab Tidy (or another close) closed: where it was, what it showed, and its group if it had one. */
 export interface ReopenedTab {
   url: string;
   index: number;
+  group?: { id: number; title: string; colour: FolderColour };
 }
 
-/** How to reverse the last Bookmark edit (or Tidy). An edit keeps only the fields it changed, before and after. */
+/** How to reverse the last Bookmark edit (or a close of several tabs: Tidy, Close other tabs,
+ *  Close tabs below, Delete group). An edit keeps only the
+ *  fields it changed, before and after. A saved group's folder (`folder`) goes whole, but only
+ *  while it holds exactly the bookmarks it was made with. */
 type UndoRecord =
   | { kind: "tabs"; tabs: ReopenedTab[] }
   | { kind: "move"; id: string; from: Place }
   | { kind: "edit"; id: string; before: BookmarkFields; after: BookmarkFields; icon?: { before: string | null; after: string | null } }
   | { kind: "remove"; node: BookmarkNode; at: Place; icons: BookmarkIcons }
-  | { kind: "create"; id: string };
+  | { kind: "create"; id: string }
+  | { kind: "folder"; id: string; children: string[] };
 
 /** How many children folder `id` has now; undefined when it's gone. */
 function childCount(nodes: BookmarkNode[], id: string): number | undefined {
@@ -444,23 +671,28 @@ function locate(nodes: BookmarkNode[], id: string): { node: BookmarkNode; parent
 }
 
 /** Tab fields a row shows (the favicon is looked up by URL, so its change matters too). */
-const SHOWN_TAB_FIELDS = new Set(["title", "url", "audible", "favIconUrl", "pinned"]);
+const SHOWN_TAB_FIELDS = new Set(["title", "url", "audible", "favIconUrl", "pinned", "groupId", "mutedInfo", "splitViewId"]);
 
 /** Starts a Sidebar for the current window. `onChange` runs whenever rows() changed. */
 export async function openSidebar(browser: SidebarBrowser, onChange: () => void): Promise<Sidebar> {
   const windowId = await browser.currentWindowId();
   let tree: BookmarkNode[] = [];
   let tabs: TabInfo[] = [];
+  let groups: TabGroupInfo[] = [];
   let folding: Folding = NO_FOLDING;
   let icons: BookmarkIcons = {};
   let rows: Row[] = [];
   let started = false; // the caller renders once openSidebar resolves; no change calls before
   const rebuild = () => {
-    rows = sidebarRows(tree, tabs, folding, icons);
+    rows = sidebarRows(tree, tabs, folding, icons, groups);
     if (started) onChange();
   };
 
+  /** This window's tabs and tab groups, read together. */
+  const strip = () => Promise.all([browser.tabs(windowId), browser.tabGroups(windowId)]);
+
   // Events can arrive faster than reads finish; only the latest read of each kind is applied.
+  // Tabs and groups are one kind: a group event re-reads both.
   const latest = { bookmarks: 0, tabs: 0 };
   async function reread(kind: "bookmarks" | "tabs"): Promise<void> {
     const n = ++latest[kind];
@@ -468,8 +700,8 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
       const t = await browser.bookmarkTree();
       if (n === latest.bookmarks) tree = t;
     } else {
-      const t = await browser.tabs(windowId);
-      if (n === latest.tabs) tabs = t;
+      const [t, g] = await strip();
+      if (n === latest.tabs) [tabs, groups] = [t, g];
     }
     if (n === latest[kind]) rebuild();
   }
@@ -506,7 +738,7 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
       iconsLoaded = true;
     }),
   ]);
-  rows = sidebarRows(tree, tabs, folding, icons);
+  rows = sidebarRows(tree, tabs, folding, icons, groups);
   started = true;
 
   /** Fresh tabs of this window, or undefined when `tabId` is no longer one of them. */
@@ -644,6 +876,14 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
         case "create":
           await browser.removeBookmark(record.id, false); // never what was put into it since
           break;
+        case "folder": {
+          const now = locate(await browser.bookmarkTree(), record.id)?.node;
+          const inside = (now?.children ?? []).map((c) => c.id);
+          if (!now || inside.length !== record.children.length || inside.some((id) => !record.children.includes(id))) throw new Error("changed");
+          await browser.removeBookmark(record.id, true);
+          await writeIcons({ [record.id]: null }).catch(() => {}); // an orphan icon is harmless
+          break;
+        }
         case "tabs": {
           const failed = await browser.reopenTabs(windowId, record.tabs);
           if (failed.length > 0) return say(`Couldn't reopen ${failed.length} tab${failed.length === 1 ? "" : "s"}`, false);
@@ -656,9 +896,119 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
     }
   }
 
+  // --- Tab groups. Chrome is the only copy: rows follow from its tab and group events. ---------
+  /** Collapses (or expands) the given groups that aren't already; before collapsing, moves the
+   *  selection out of them as the tab strip does (selectionAfterCollapse). */
+  async function setCollapsed(ids: number[], collapsed: boolean): Promise<void> {
+    const [now, all] = await strip();
+    const changing = all.filter((g) => ids.includes(g.id) && g.collapsed !== collapsed);
+    if (changing.length === 0) return;
+    if (collapsed) {
+      const hidden = new Set([...all.filter((g) => g.collapsed), ...changing].map((g) => g.id));
+      const next = selectionAfterCollapse(now, hidden);
+      if (next === null) await browser.newTab(windowId);
+      else if (next !== undefined) await browser.selectTab(next);
+    }
+    await Promise.all(changing.map((g) => browser.updateGroup(g.id, { collapsed })));
+  }
+  /** Closes a group of this window with `close`; when it holds every tab, opens a New Tab first,
+   *  so the window (and this panel) stays. */
+  async function closingGroup(id: number, close: () => Promise<void>): Promise<void> {
+    const now = await browser.tabs(windowId);
+    const n = now.filter((t) => t.groupId === id).length;
+    if (n === 0) return;
+    if (n === now.length) await browser.newTab(windowId);
+    await close();
+  }
+
+  // --- Folders of tabs, and the Tab menu. ------------------------------------------------------
+  /** A new folder at `at` with `tabs` as bookmarks in order (ones with no address yet left out),
+   *  and `icon` as its Bookmark icon; one Bookmark edit, whose Undo removes the folder whole. */
+  async function saveFolder(at: Place, title: string, tabs: TabInfo[], icon?: string): Promise<Done> {
+    const pages = tabs.filter((t) => t.url !== "");
+    if (pages.length === 0) throw new Error("gone");
+    const id = await browser.createBookmark(at, { title });
+    const children: string[] = [];
+    try {
+      for (const [index, t] of pages.entries()) children.push(await browser.createBookmark({ parentId: id, index }, { title: t.title || t.url, url: t.url }));
+    } catch (error) {
+      try {
+        await browser.removeBookmark(id, true);
+      } catch {
+        throw new PartialEdit({ kind: "folder", id, children }, `Saved only part of ‘${title}’`);
+      }
+      throw error;
+    }
+    const iconed = icon === undefined || (await writeIcons({ [id]: icon }).then(() => true, () => false));
+    const n = `${children.length} tab${children.length === 1 ? "" : "s"}`;
+    return { id, record: { kind: "folder", id, children }, text: `Saved ‘${title}’, ${n}${iconed ? "" : ", without its colour"}` };
+  }
+
+  /** Close other tabs (or, `below`, Close tabs below) as Chrome's tab strip does
+   *  (TabStripModel::GetTabsClosedByCommand): every other tab of the window (below it), except
+   *  pinned tabs and its Split View partner; grouped tabs too. A group all of whose tabs go is
+   *  closed whole and stays in Chrome's saved tab groups, as there; the other tabs close one by
+   *  one and Undo reopens them in place, back in their groups. The tab itself stays, so the
+   *  window does. */
+  async function closeAround(id: number, below: boolean): Promise<undefined> {
+    const [now, all] = await strip();
+    const i = now.findIndex((t) => t.id === id);
+    const me = now[i];
+    if (!me) return undefined;
+    const closing = new Set(
+      now.filter((t, j) => (below ? j > i : j !== i) && !t.pinned && !(me.splitViewId !== undefined && t.splitViewId === me.splitViewId)).map((t) => t.id),
+    );
+    if (closing.size === 0) return undefined;
+    const whole = all.filter((g) => {
+      const members = now.filter((t) => t.groupId === g.id);
+      return members.length > 0 && members.every((t) => closing.has(t.id));
+    });
+    const wholeIds = new Set(whole.map((g) => g.id));
+    // Positions as Undo will find them: with the whole groups gone, not reopened.
+    const staying = now.filter((t) => !wholeIds.has(t.groupId));
+    const groupOf = new Map(all.map((g) => [g.id, { id: g.id, title: g.title, colour: g.colour }]));
+    const single = staying.flatMap((t, index) => {
+      if (!closing.has(t.id)) return [];
+      const group = groupOf.get(t.groupId);
+      return [{ id: t.id, url: t.url, index, ...(group && { group }) }];
+    });
+    if (whole.length > 0) await browser.closeGroups(whole.map((g) => g.id));
+    const closed = new Set(single.length > 0 ? await browser.closeTabs(single.map((t) => t.id)) : []);
+    const gone = single.filter((t) => closed.has(t.id));
+    const tabsText = gone.length > 0 ? `Closed ${gone.length} tab${gone.length === 1 ? "" : "s"}` : "";
+    const groupsText = whole.length > 0 ? `${whole.length} group${whole.length === 1 ? "" : "s"} to Chrome's saved groups` : "";
+    if (gone.length > 0) undoRecord = { kind: "tabs", tabs: gone.map(({ url, index, group }) => ({ url, index, ...(group && { group }) })) };
+    if (!tabsText && !groupsText) say("Couldn't close the tabs", false);
+    else say(tabsText && groupsText ? `${tabsText}; ${groupsText}` : tabsText || `Closed ${groupsText}`, gone.length > 0);
+    return undefined;
+  }
+
+  /** splitTab: the selected tab and `id`, which moves beside it first (Chrome's API takes only
+   *  adjacent tabs with the same pinned and group state, so other tabs aren't offered); on the
+   *  selected tab itself, it and a new tab beside it. */
+  async function split(id: number): Promise<void> {
+    const now = await ownTabs(id);
+    const tab = now?.find((t) => t.id === id);
+    const active = now?.find((t) => t.active);
+    if (!now || !tab || !active || !canSplitWith(tab, active)) return;
+    const at = now.indexOf(active);
+    if (tab === active) {
+      const fresh = await browser.newTabAt(windowId, at + 1, tab.groupId === NO_GROUP ? undefined : tab.groupId);
+      if (tab.pinned) await browser.updateTab(fresh, { pinned: true });
+      return void (await browser.createSplit([active.id, fresh]));
+    }
+    const from = now.indexOf(tab);
+    await browser.moveTab(id, windowId, from < at ? at : at + 1);
+    await browser.createSplit(from < at ? [id, active.id] : [active.id, id]);
+  }
+
   return {
     rows: () => rows,
     notice: () => notice,
+    tabs: () => tabs,
+    tree: () => tree,
+    otherWindows: () => browser.otherWindows(windowId),
+    canSplit: browser.canSplit,
     async run(command, options = {}) {
       switch (command.type) {
         case "moveBookmark":
@@ -708,12 +1058,21 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
             const id = await browser.createBookmark(command.at, node);
             return { id, record: { kind: "create", id }, text: `Added ‘${node.title}’` };
           });
-        case "closeOtherTabs":
+        case "saveGroup":
+          return edit(async () => {
+            const [now, all] = await strip();
+            const group = all.find((g) => g.id === command.id);
+            if (!group) throw new Error("gone");
+            return saveFolder(command.at, group.title || UNTITLED_GROUP, now.filter((t) => t.groupId === command.id), folderIcon(group.colour));
+          });
+        case "saveTabs":
+          return edit(async () => saveFolder(command.at, command.title, await browser.tabs(windowId)));
+        case "tidy":
           return serial(async () => {
-            const candidates = (await browser.tabs(windowId)).flatMap((t, index) => (t.active || t.pinned ? [] : [{ id: t.id, url: t.url, index }]));
+            const candidates = (await browser.tabs(windowId)).flatMap((t, index) => (isLoose(t) && !t.active ? [{ id: t.id, url: t.url, index }] : []));
             if (candidates.length === 0) return undefined;
-            // Read again right before closing: a tab selected, pinned or moved away meanwhile stays.
-            const still = new Set((await browser.tabs(windowId)).filter((t) => !t.active && !t.pinned).map((t) => t.id));
+            // Read again right before closing: a tab selected, pinned, grouped or moved away meanwhile stays.
+            const still = new Set((await browser.tabs(windowId)).filter((t) => isLoose(t) && !t.active).map((t) => t.id));
             const closing = candidates.filter((t) => still.has(t.id));
             if (closing.length === 0) return undefined;
             const closed = new Set(await browser.closeTabs(closing.map((t) => t.id)));
@@ -721,6 +1080,105 @@ export async function openSidebar(browser: SidebarBrowser, onChange: () => void)
             if (gone.length === 0) return void say("Couldn't close the tabs", false);
             undoRecord = { kind: "tabs", tabs: gone.map(({ url, index }) => ({ url, index })) };
             say(`Closed ${gone.length} tab${gone.length === 1 ? "" : "s"}`, true);
+            return undefined;
+          });
+        case "openFolder": {
+          const fresh = await browser.bookmarkTree();
+          const urls = openAllUrls(fresh, command.id, command.where === "incognito").filter(openable);
+          if (urls.length === 0) return undefined;
+          if (command.where === "window" || command.where === "incognito") return void (await browser.openWindow(urls, command.where === "incognito"));
+          const opened = await browser.openTabs(windowId, urls);
+          if (command.where === "here" || opened.length === 0) return undefined;
+          const folder = findNode(fresh, command.id);
+          const title = uniqueGroupTitle(folder?.title ?? "", await browser.groupTitles());
+          const colour = folderColour(icons[command.id]);
+          return String(await browser.groupTabs(windowId, opened, title, colour));
+        }
+        case "closeOthers":
+        case "closeBelow":
+          return serial(() => closeAround(command.id, command.type === "closeBelow"));
+        case "newTabBelow": {
+          const now = await ownTabs(command.id);
+          const i = now?.findIndex((t) => t.id === command.id) ?? -1;
+          if (!now || i < 0) return;
+          const groupId = now[i]!.groupId;
+          return void (await browser.newTabAt(windowId, i + 1, groupId === NO_GROUP ? undefined : groupId));
+        }
+        case "groupTab": {
+          const tab = (await ownTabs(command.id))?.find((t) => t.id === command.id);
+          if (!tab) return undefined;
+          if (tab.pinned) await browser.updateTab(tab.id, { pinned: false }); // as Chrome's menu does: groups hold no pinned tabs
+          return String(await browser.groupTab(tab.id, command.groupId));
+        }
+        case "ungroupTab":
+          if (await ownTabs(command.id)) await browser.ungroupTabs([command.id]);
+          return;
+        case "moveTabToNewWindow":
+        case "moveTabToWindow": {
+          // Never this window's last tab: moving it would close the window.
+          const now = await ownTabs(command.id);
+          if (!now || now.length === 1) return;
+          if (command.type === "moveTabToNewWindow") return void (await browser.moveTabToNewWindow(command.id));
+          return void (await browser.moveTab(command.id, command.windowId, -1));
+        }
+        case "reloadTab":
+        case "duplicateTab":
+        case "pinTab":
+        case "muteTab": {
+          if (!(await ownTabs(command.id))) return;
+          if (command.type === "reloadTab") return void (await browser.reloadTab(command.id));
+          if (command.type === "duplicateTab") return void (await browser.duplicateTab(command.id));
+          return void (await browser.updateTab(command.id, command.type === "pinTab" ? { pinned: command.pinned } : { muted: command.muted }));
+        }
+        case "splitTab":
+          return void (await split(command.id));
+        case "unsplitTab": {
+          const id = (await ownTabs(command.id))?.find((t) => t.id === command.id)?.splitViewId;
+          if (id !== undefined) await browser.unsplit(id);
+          return;
+        }
+        case "toggleGroup":
+          return void (await setCollapsed([command.id], !command.open));
+        case "foldGroups":
+          return void (await setCollapsed((await browser.tabGroups(windowId)).map((g) => g.id), !command.open));
+        case "editGroup":
+          return void (await browser.updateGroup(command.id, { title: command.title, ...(command.colour && { colour: command.colour }) }));
+        case "newTabInGroup": {
+          const [now, all] = await strip();
+          const last = now.map((t) => t.groupId).lastIndexOf(command.id);
+          if (last < 0) return;
+          if (all.find((g) => g.id === command.id)?.collapsed) await browser.updateGroup(command.id, { collapsed: false });
+          return void (await browser.newTabAt(windowId, last + 1, command.id));
+        }
+        case "moveGroupToNewWindow": {
+          // As on Chrome's tab strip, not a group that is the whole window: that would close it.
+          const now = await browser.tabs(windowId);
+          const n = now.filter((t) => t.groupId === command.id).length;
+          if (n > 0 && n < now.length) await browser.moveGroupToNewWindow(command.id);
+          return;
+        }
+        case "ungroup": {
+          const ids = (await browser.tabs(windowId)).filter((t) => t.groupId === command.id).map((t) => t.id);
+          if (ids.length > 0) await browser.ungroupTabs(ids);
+          return;
+        }
+        case "closeGroup":
+          return void (await closingGroup(command.id, () => browser.closeGroups([command.id])));
+        case "deleteGroup":
+          return serial(async () => {
+            const [now, all] = await strip();
+            const group = all.find((g) => g.id === command.id);
+            const members = now.flatMap((t, index) => (t.groupId === command.id ? [{ id: t.id, url: t.url, index }] : []));
+            if (!group || members.length === 0) return undefined;
+            let closed = new Set<number>();
+            await closingGroup(command.id, async () => {
+              closed = new Set(await browser.closeTabs(members.map((t) => t.id)));
+            });
+            const gone = members.filter((t) => closed.has(t.id));
+            if (gone.length === 0) return void say("Couldn't close the group", false);
+            const was = { id: group.id, title: group.title, colour: group.colour };
+            undoRecord = { kind: "tabs", tabs: gone.map(({ url, index }) => ({ url, index, group: was })) };
+            say(`Deleted group ‘${group.title || UNTITLED_GROUP}’`, true);
             return undefined;
           });
         case "undo":

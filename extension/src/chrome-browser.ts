@@ -1,5 +1,5 @@
 // Chrome adapter for the sweep's Browser seam. Needs no "tabs" permission: IDs, active,
-// audible and lastAccessed are available without it; URLs and titles are never read.
+// audible, pinned, groupId and lastAccessed are available without it; URLs and titles are never read.
 import type { Browser, LastUseRecords, WindowSnapshot } from "./sweep";
 
 export const LAST_USE_KEY = "lastUse";
@@ -20,7 +20,7 @@ export const chromeBrowser: Browser = {
               tabs: (w.tabs ?? []).flatMap((t) =>
                 t.id === undefined || t.id === chrome.tabs.TAB_ID_NONE
                   ? []
-                  : [{ id: t.id, active: t.active, audible: t.audible ?? false, lastAccessed: t.lastAccessed }],
+                  : [{ id: t.id, active: t.active, audible: t.audible ?? false, lastAccessed: t.lastAccessed, pinned: t.pinned, grouped: t.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE }],
               ),
             },
           ],

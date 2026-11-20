@@ -11,6 +11,9 @@ export interface TabSnapshot {
   audible: boolean;
   /** Chrome's own "last became active in its window", epoch ms. */
   lastAccessed: number | undefined;
+  pinned?: boolean;
+  /** In a tab group. */
+  grouped?: boolean;
 }
 
 export interface WindowSnapshot {
@@ -27,7 +30,7 @@ export type LastUseRecords = Record<number, number>;
 export interface SweepPlan {
   /** Tabs to close: unselected before selected, then oldest last use first. */
   close: number[];
-  kept: { recent: number; audible: number; focused: number };
+  kept: { recent: number; audible: number; focused: number; pinned: number; grouped: number };
 }
 
 /** Most recent local SWEEP_HOUR:00 at or before `now`. */
@@ -53,13 +56,15 @@ export function planSweep(
   now: number,
   guardMs: number = RECENT_USE_GUARD_MS,
 ): SweepPlan {
-  const plan: SweepPlan = { close: [], kept: { recent: 0, audible: 0, focused: 0 } };
+  const plan: SweepPlan = { close: [], kept: { recent: 0, audible: 0, focused: 0, pinned: 0, grouped: 0 } };
   const closing: TabSnapshot[] = [];
   for (const win of windows) {
     if (win.type !== "normal" || win.incognito) continue;
     for (const tab of win.tabs) {
       if (win.focused && tab.active) plan.kept.focused++;
       else if (tab.audible) plan.kept.audible++;
+      else if (tab.pinned) plan.kept.pinned++;
+      else if (tab.grouped) plan.kept.grouped++;
       else if (now - lastUse(tab, records) <= guardMs) plan.kept.recent++;
       else closing.push(tab);
     }

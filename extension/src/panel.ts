@@ -1,7 +1,7 @@
 // Side panel page: renders the Sidebar's rows and turns clicks and keys into its commands.
 // Rendering only — what rows exist and what a key does live in sidebar.ts.
 import { COLOUR_TREATMENT_KEY, SITE_ICONS_KEY, SITE_MEMORY_PREFIX, colourTreatment, siteIcons } from "./settings";
-import { FOLDER_COLOURS, addPlace, dropPlace, folderColour, folderIcon, iconText, keyResult, siteIconUrls, openSidebar, rowCommand, type DragSource, type DropZone, type KeyResult, type Place, type Row, type Sidebar } from "./sidebar";
+import { FOLDER_COLOURS, NO_GROUP, OPEN_ALL_ASK_FROM, addPlace, canSplitWith, openAllUrls, dropPlace, folderColour, folderIcon, iconText, keyResult, siteIconUrls, openSidebar, rowCommand, type Command, type DragSource, type FolderColour, type OpenAllWhere, type WindowInfo, type DropZone, type KeyResult, type Place, type Row, type Sidebar } from "./sidebar";
 import { chromeSidebar } from "./sidebar-chrome";
 
 const app = document.getElementById("app")!;
@@ -17,7 +17,14 @@ const ICON = {
   plus: svg('<path d="M8 3.5v9M3.5 8h9"/>'),
   // A broom: Tidy.
   tidy: svg('<path d="M13.5 2.5 8.6 7.4"/><path d="M6.6 6.9 9.1 9.4 8.2 13.5H2.5V8.6z"/><path d="M4.4 13.5 5.6 11M6.4 13.5 7.2 11.6"/>'),
+  muted: svg('<path d="M3 6.5h2l3-2.5v8L5 9.5H3zM10.5 6.5l3 3M13.5 6.5l-3 3"/>', 14),
+  // Two panes: a tab in a Split View.
+  split: svg('<rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/><path d="M8 3.5v9"/>', 14),
   audio: svg('<path d="M3 6.5h2l3-2.5v8L5 9.5H3zM10.5 6a2.5 2.5 0 0 1 0 4M12 4.5a4.6 4.6 0 0 1 0 7"/>', 14),
+  pin: svg('<path d="M9.5 2.5 13.5 6.5 11 7.5 8.5 10l-.5 2.5L3.5 8 6 7.5 8.5 5zM5.75 10.25 2.5 13.5"/>', 14),
+  // Expand all / collapse all groups: chevrons apart, chevrons together.
+  unfold: svg('<path d="M5 6l3-3 3 3M5 10l3 3 3-3"/>'),
+  fold: svg('<path d="M5 3l3 3 3-3M5 13l3-3 3 3"/>'),
 };
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -94,7 +101,15 @@ const forgetSite = (origin: string) => chrome.storage.local.remove(SITE_MEMORY +
 /** Tidy on the Tabs heading, when there's something to close; reachable with Tab (deliberately
  *  no key on the heading itself: one stray Delete would close the window's tabs). */
 const tidyButton = (n: number) =>
-  n > 0 ? `<button class="icon-btn tidy" data-tidy aria-label="Close ${n} other tab${n === 1 ? "" : "s"}" title="Close other tabs (${n})">${ICON.tidy}</button>` : "";
+  n > 0 ? `<button class="icon-btn tidy" data-tidy aria-label="Close ${n} ungrouped tab${n === 1 ? "" : "s"}" title="Close ungrouped tabs (${n})">${ICON.tidy}</button>` : "";
+/** Expand or collapse every group, beside Tidy, when the window has groups: collapses while any
+ *  is expanded, else expands. */
+const groupsButton = (groups: { total: number; open: number } | undefined) => {
+  if (!groups) return "";
+  const expand = groups.open === 0;
+  const label = expand ? "Expand all groups" : "Collapse all groups";
+  return `<button class="icon-btn tidy" data-groups="${expand ? "expand" : "collapse"}" aria-label="${label}" title="${label}">${expand ? ICON.unfold : ICON.fold}</button>`;
+};
 const emoji = (icon: string) => `<span class="emoji" aria-hidden="true">${esc(icon)}</span>`;
 const FOLDER_FILLED = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M2 4.6c0-.6.5-1.1 1.1-1.1h3l1.4 1.4h5.4c.6 0 1.1.5 1.1 1.1v5.4c0 .6-.5 1.1-1.1 1.1H3.1c-.6 0-1.1-.5-1.1-1.1z"/></svg>`;
 /** A Bookmark icon: a coloured folder (folder:<colour>) or an emoji. */
@@ -105,28 +120,38 @@ const iconHtml = (icon: string) => {
 
 // --- Rows to HTML. ---------------------------------------------------------------------------
 function rowHtml(row: Row): string {
-  const draggable = row.kind === "tab" || ((row.kind === "folder" || row.kind === "bookmark") && !row.locked);
+  const draggable = row.kind === "tab" || row.kind === "group" || ((row.kind === "folder" || row.kind === "bookmark") && !row.locked);
   const attrs = `data-key="${esc(row.key)}" tabindex="-1"${draggable ? ' draggable="true"' : ""}`;
   switch (row.kind) {
     case "section":
       return `<div class="section-head${row.section === "tabs" ? " sticky" : ""}" role="button" aria-expanded="${row.open}" ${attrs}>
-        ${ICON.chev}<span>${row.label}</span><span class="grow"></span>${tidyButton(row.tidy ?? 0)}<span class="count">${row.count ?? ""}</span></div>`;
+        ${ICON.chev}<span>${row.label}</span><span class="grow"></span>${groupsButton(row.groups)}${tidyButton(row.tidy ?? 0)}<span class="count">${row.count ?? ""}</span></div>`;
+    case "group": {
+      // A coloured pill, as on Chrome's tab strip; an untitled one shows no name, just its count.
+      const name = row.title || "Unnamed group";
+      const tabs = `${row.count} tab${row.count === 1 ? "" : "s"}`;
+      const hidden = !row.open && row.selected ? '<span class="sel-dot" title="The selected tab is in this group"></span>' : "";
+      return `<div class="row group" role="treeitem" aria-level="1" aria-expanded="${row.open}" aria-label="${esc(`${name}, ${tabs}`)}" data-colour="${row.colour}" title="${esc(`${name} · ${tabs}`)}" ${attrs}>
+        <span class="label">${esc(row.title)}</span>${hidden}<span class="folder-count">${row.count}</span>${ICON.chev}</div>`;
+    }
     case "folder":
       return `<div class="row folder" role="treeitem" aria-level="${row.depth + 1}" aria-expanded="${row.open}" style="--depth:${row.depth}" title="${esc(row.title)}" ${attrs}>
         ${ICON.chev}<span class="ico">${row.icon !== undefined ? iconHtml(row.icon) : ICON.folder}</span><span class="label">${esc(row.title)}</span><span class="folder-count">${row.count}</span></div>`;
     case "bookmark":
       return `<div class="row bookmark" role="treeitem" aria-level="${row.depth + 1}" style="--depth:${row.depth}" title="${esc(`${row.title}\n${host(row.url)}`)}" ${attrs}>
         <span class="leaf-pad"></span>${row.icon !== undefined ? `<span class="ico">${iconHtml(row.icon)}</span>` : favicon(row.url, true)}<span class="label">${esc(row.title)}</span></div>`;
-    case "tab":
-      return `<div class="row tab" role="option" aria-selected="${row.active}" title="${esc(`${row.title}\n${host(row.url)}`)}" ${attrs}>
-        ${favicon(row.url)}<span class="label">${esc(row.title)}</span>${row.audible ? `<span class="state" title="Playing audio">${ICON.audio}</span>` : ""}
+    case "tab": {
+      const grouped = row.colour !== undefined;
+      return `<div class="row tab${grouped ? " grouped" : ""}" role="treeitem" aria-level="${grouped ? 2 : 1}" aria-selected="${row.active}"${grouped ? ` data-colour="${row.colour}"` : ""} title="${esc(`${row.title}\n${host(row.url)}`)}" ${attrs}>
+        ${favicon(row.url)}<span class="label">${esc(row.title)}</span>${row.pinned ? `<span class="state" title="Pinned">${ICON.pin}</span>` : ""}${row.split ? `<span class="state" title="In a split view">${ICON.split}</span>` : ""}${row.muted ? `<span class="state" title="Muted">${ICON.muted}</span>` : row.audible ? `<span class="state" title="Playing audio">${ICON.audio}</span>` : ""}
         <button class="icon-btn close" tabindex="-1" data-close="${row.id}" aria-label="Close ${esc(row.title)}">${ICON.close}</button></div>`;
+    }
     case "newtab":
-      return `<div class="row new-tab" role="option" aria-selected="false" ${attrs}><span class="ico">${ICON.plus}</span><span class="label">New tab</span></div>`;
+      return `<div class="row new-tab" role="treeitem" aria-level="1" aria-selected="false" ${attrs}><span class="ico">${ICON.plus}</span><span class="label">New tab</span></div>`;
   }
 }
 
-/** Section heads stand alone; the rows between them go into a tree (bookmarks) or listbox (tabs). */
+/** Section heads stand alone; the rows between them go into a tree each (bookmarks; tabs under their group headers). */
 function pageHtml(rows: Row[]): string {
   let html = "";
   for (let i = 0; i < rows.length; ) {
@@ -136,7 +161,7 @@ function pageHtml(rows: Row[]): string {
     while (i < rows.length && rows[i]!.kind !== "section") body += rowHtml(rows[i++]!);
     if (head.kind !== "section" || !head.open) continue;
     if (head.section === "bookmarks") html += body ? `<div role="tree" aria-label="Bookmarks">${body}</div>` : '<div class="empty">No bookmarks</div>';
-    else html += `<div role="listbox" aria-label="Tabs in this window">${body}</div>`;
+    else html += `<div role="tree" aria-label="Tabs in this window">${body}</div>`;
   }
   return html;
 }
@@ -218,7 +243,12 @@ app.addEventListener("click", (e) => {
   }
   if (e.target instanceof Element && e.target.closest("[data-tidy]")) {
     e.stopPropagation();
-    return void sidebar.run({ type: "closeOtherTabs" }).catch(report);
+    return void sidebar.run({ type: "tidy" }).catch(report);
+  }
+  const groups = e.target instanceof Element ? e.target.closest<HTMLElement>("[data-groups]") : null;
+  if (groups) {
+    e.stopPropagation();
+    return void sidebar.run({ type: "foldGroups", open: groups.dataset.groups === "expand" }).catch(report);
   }
   const row = findRow(rowOf(e.target)?.dataset.key);
   if (!row || (overlay?.kind === "editor" && overlay.key === row.key)) return;
@@ -259,15 +289,15 @@ function apply(result: KeyResult, background = false): void {
   if (result.focus) moveStop(result.focus, true);
   if (result.command) void sidebar.run(result.command, { background }).catch(report);
   if (result.edit) openEditor(result.edit);
-  if (result.menu) openMenu(result.menu);
+  if (result.menu) showMenu(result.menu);
 }
 
 app.addEventListener("contextmenu", (e) => {
   const key = rowOf(e.target)?.dataset.key;
-  if (key === undefined || !menuItems(key).length) return; // tabs keep Chrome's own menu
+  if (key === undefined || !menuItems(key).length) return; // the New tab row and the Tabs heading keep the page's own menu
   e.preventDefault();
   moveStop(key, true);
-  openMenu(key, e.clientX, e.clientY);
+  showMenu(key, e.clientX, e.clientY);
 });
 
 // --- Bookmark edits: the row menu, the inline editor and the footer notice. -------------------
@@ -288,6 +318,8 @@ let editAfterRender: string | undefined;
 
 type Editable = Extract<Row, { kind: "folder" | "bookmark" }>;
 const editable = (row: Row | undefined): row is Editable => (row?.kind === "folder" || row?.kind === "bookmark") && !row.locked;
+type GroupRow = Extract<Row, { kind: "group" }>;
+type TabRow = Extract<Row, { kind: "tab" }>;
 
 function closeOverlay(refocus: string | undefined): void {
   overlay = undefined; // first: removing a focused menu can fire its focusout
@@ -304,62 +336,230 @@ async function openParent(at: Place): Promise<void> {
   if (parent?.kind === "folder" && !parent.open) await sidebar.run({ type: "toggleFolder", id: parent.id, open: true });
 }
 
-function menuItems(key: string): [string, () => void][] {
+/** A row menu entry, or "-" between groups of them. `editor`: it opens the inline editor, which
+ *  takes the focus. `sub`: a submenu instead of an action, shown in the menu's place. `colour`: a
+ *  tab group's, as a dot before the label. */
+type MenuEntry = { label: string; run?: () => void; editor?: true; sub?: MenuEntry[]; colour?: FolderColour } | "-";
+/** No separator first, last or twice in a row. */
+const separated = (entries: MenuEntry[]) =>
+  entries.filter((e, i, all) => e !== "-" || (i > 0 && i < all.length - 1 && all[i - 1] !== "-" && all.slice(i + 1).some((x) => x !== "-")));
+
+function menuItems(key: string, windows: WindowInfo[] = []): MenuEntry[] {
   const rows = sidebar.rows();
   const row = rows.find((r) => r.key === key);
-  const items: [string, () => void][] = [];
+  if (row?.kind === "group") return groupMenu(row, rows);
+  if (row?.kind === "tab") return tabMenu(row, rows, windows);
+  const items: MenuEntry[] = row?.kind === "folder" ? [...openAllMenu(row.id), "-"] : [];
   if (editable(row)) {
-    items.push(["Edit…", () => openEditor(key)]);
-    items.push(["Delete", () => apply(keyResult(sidebar.rows(), key, "Delete"))]);
+    items.push({ label: "Edit…", run: () => openEditor(key), editor: true });
+    items.push({ label: "Delete", run: () => apply(keyResult(sidebar.rows(), key, "Delete")) });
   }
   const at = addPlace(rows, key);
   if (at) {
-    items.push(["New folder", () => void openParent(at).then(() => sidebar.run({ type: "newFolder", at, title: "New folder" })).then((id) => {
+    if (items.length > 0 && items.at(-1) !== "-") items.push("-");
+    items.push({ label: "New folder", run: () => void openParent(at).then(() => sidebar.run({ type: "newFolder", at, title: "New folder" })).then((id) => {
       if (id === undefined) return;
       editAfterRender = `b:${id}`;
       scheduleRender();
-    }).catch(report)]);
-    items.push(["Add current tab", () => void openParent(at).then(() => sidebar.run({ type: "addCurrentTab", at })).catch(report)]);
+    }).catch(report) });
+    items.push({ label: "Add current tab", run: () => void openParent(at).then(() => sidebar.run({ type: "addCurrentTab", at })).catch(report) });
   }
-  return items;
+  return separated(items);
 }
 
-function openMenu(key: string, x?: number, y?: number): void {
-  const items = menuItems(key);
-  if (!items.length) return;
+/** A folder's Open All items, as on Chrome's bookmark bar (when it has bookmarks of its own to
+ *  open). From OPEN_ALL_ASK_FROM bookmarks on, each asks first, in place of the menu, as Chrome
+ *  asks "Open all N?". In a new group, the group's name editor opens, as Chrome's does. */
+function openAllMenu(id: string): MenuEntry[] {
+  const tree = sidebar.tree();
+  const n = openAllUrls(tree, id).length;
+  const nPrivate = openAllUrls(tree, id, true).length;
+  const open = (where: OpenAllWhere) => () =>
+    void sidebar.run({ type: "openFolder", id, where }).then((group) => {
+      if (where !== "group" || group === undefined) return;
+      editAfterRender = `g:${group}`;
+      scheduleRender();
+    }).catch(report);
+  const item = (label: string, count: number, where: OpenAllWhere): MenuEntry[] => {
+    if (count === 0) return [];
+    const run = open(where);
+    if (count < OPEN_ALL_ASK_FROM) return [{ label, run }];
+    return [{ label, sub: [{ label: `Open ${count} tabs`, run }, { label: "Cancel", run: () => {} }] }];
+  };
+  return [
+    ...item(`Open All (${n})`, n, "here"),
+    ...item(`Open All (${n}) in New Window`, n, "window"),
+    ...item(`Open All (${nPrivate}) in Incognito Window`, nPrivate, "incognito"),
+    ...item(`Open All (${n}) in New Tab Group`, n, "group"),
+  ];
+}
+
+/** Chrome's own group menu, as far as extensions can reach it. Close group keeps it in Chrome's
+ *  saved tab groups; Ungroup and Delete group take it out, as in Chrome. Save group to bookmarks
+ *  puts it first in the bookmarks bar (as the Bookmarks heading's Add current tab does). */
+function groupMenu(row: GroupRow, rows: Row[]): MenuEntry[] {
+  const run = (command: Command) => () => void sidebar.run(command).catch(report);
+  const id = row.id;
+  const head = rows.find((r) => r.key === "s:tabs");
+  const whole = head?.kind === "section" && head.count === row.count; // Chrome can't move all of a window's tabs out
+  const bar = addPlace(rows, "s:bookmarks");
+  return [
+    { label: "Name and colour…", run: () => openEditor(row.key), editor: true },
+    "-",
+    { label: "New tab in group", run: run({ type: "newTabInGroup", id }) },
+    ...(whole ? [] : [{ label: "Move group to new window", run: run({ type: "moveGroupToNewWindow", id }) }]),
+    ...(bar ? ["-" as const, { label: "Save group to bookmarks", run: () => void openParent(bar).then(() => sidebar.run({ type: "saveGroup", id, at: bar })).catch(report) }] : []),
+    "-",
+    { label: "Close group", run: run({ type: "closeGroup", id }) },
+    { label: "Ungroup", run: run({ type: "ungroup", id }) },
+    { label: "Delete group", run: run({ type: "deleteGroup", id }) },
+  ];
+}
+
+/** Chrome's own tab menu, as far as extensions can reach it (see README). Below = Chrome's "to
+ *  the right". Close other tabs and Close tabs below are offered when they'd close something. */
+function tabMenu(row: TabRow, rows: Row[], windows: WindowInfo[]): MenuEntry[] {
+  const tabs = sidebar.tabs();
+  const i = tabs.findIndex((t) => t.id === row.id);
+  const tab = tabs[i];
+  if (!tab) return [];
+  const id = tab.id;
+  const run = (command: Command) => () => void sidebar.run(command).catch(report);
+  const alone = tabs.length === 1; // moving it would close the window
+  const grouped = tab.groupId !== NO_GROUP;
+  const intoGroups = rows.flatMap((r) => (r.kind === "group" && r.id !== tab.groupId ? [r] : []));
+  const newGroup = () =>
+    void sidebar.run({ type: "groupTab", id }).then((group) => {
+      if (group === undefined) return;
+      editAfterRender = `g:${group}`; // name it, as Chrome's own new-group bubble asks
+      scheduleRender();
+    }).catch(report);
+  const others = (from: number) => tabs.some((t, j) => j >= from && t.id !== id && !t.pinned && !(tab.splitViewId !== undefined && t.splitViewId === tab.splitViewId));
+  const active = tabs.find((t) => t.active);
+  const bar = addPlace(rows, "s:bookmarks");
+  const tabsLabel = (n: number) => (n > 1 ? ` and ${n - 1} more tab${n === 2 ? "" : "s"}` : "");
+  return separated([
+    { label: "New tab below", run: run({ type: "newTabBelow", id }) },
+    "-",
+    intoGroups.length === 0
+      ? { label: "Add tab to new group", run: newGroup }
+      : { label: "Add tab to group", sub: [{ label: "New group", run: newGroup }, "-", ...intoGroups.map((g) => ({ label: g.title || "Unnamed group", colour: g.colour, run: run({ type: "groupTab", id, groupId: g.id }) }))] },
+    ...(grouped ? [{ label: "Remove from group", run: run({ type: "ungroupTab", id }) }] : []),
+    ...(alone ? [] : [{ label: "Move tab to new window", run: run({ type: "moveTabToNewWindow", id }) }]),
+    ...(alone || windows.length === 0 ? [] : [{ label: "Move tab to another window", sub: windows.map((w) => ({ label: `${w.title}${tabsLabel(w.tabs)}`, run: run({ type: "moveTabToWindow", id, windowId: w.id }) })) }]),
+    "-",
+    { label: "Reload", run: run({ type: "reloadTab", id }) },
+    { label: "Duplicate", run: run({ type: "duplicateTab", id }) },
+    { label: tab.pinned ? "Unpin" : "Pin", run: run({ type: "pinTab", id, pinned: !tab.pinned }) },
+    { label: tab.muted ? "Unmute tab" : "Mute tab", run: run({ type: "muteTab", id, muted: !tab.muted }) },
+    ...(!sidebar.canSplit ? [] : tab.splitViewId !== undefined ? [{ label: "Exit split view", run: run({ type: "unsplitTab", id }) }]
+      : active && canSplitWith(tab, active) ? [{ label: tab.active ? "New split view" : "Split view with selected tab", run: run({ type: "splitTab", id }) }] : []),
+    "-",
+    { label: "Close", run: run({ type: "closeTab", id }) },
+    ...(others(0) ? [{ label: "Close other tabs", run: run({ type: "closeOthers", id }) }] : []),
+    ...(others(i + 1) ? [{ label: "Close tabs below", run: run({ type: "closeBelow", id }) }] : []),
+    "-",
+    ...(bar && tab.url ? [{ label: "Bookmark tab", run: () => void openParent(bar).then(() => sidebar.run({ type: "addBookmark", at: bar, title: row.title, url: tab.url })).catch(report) }] : []),
+    ...(bar ? [{ label: "Bookmark all tabs", run: () => void openParent(bar).then(() => sidebar.run({ type: "saveTabs", at: bar, title: "All tabs" })).then((folder) => {
+      if (folder === undefined) return;
+      editAfterRender = `b:${folder}`; // name it, as Chrome's own dialog asks
+      scheduleRender();
+    }).catch(report) }] : []),
+    ...(tab.url ? [{ label: "Copy link", run: () => void copyText(tab.url) }] : []),
+  ]);
+}
+
+/** The clipboard, from the menu click (a user gesture, so no clipboardWrite permission is needed). */
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const field = Object.assign(document.createElement("textarea"), { value: text });
+    document.body.append(field);
+    field.select();
+    document.execCommand("copy");
+    field.remove();
+  }
+}
+
+/** A row's menu; a tab's lists the other windows, so they're read first. */
+function showMenu(key: string, x?: number, y?: number): void {
+  if (findRow(key)?.kind !== "tab") return openMenu(key, x, y);
+  void sidebar.otherWindows().then((windows) => openMenu(key, x, y, windows), () => openMenu(key, x, y));
+}
+
+function openMenu(key: string, x?: number, y?: number, windows: WindowInfo[] = []): void {
+  const items = menuItems(key, windows);
+  if (!items.length || !rowEl(key)) return;
   closeOverlay(undefined);
   overlay = { kind: "menu", key };
   const menu = document.createElement("div");
   menu.className = "menu";
   menu.setAttribute("role", "menu");
-  items.forEach(([label, action], i) => {
-    if (i === 2) menu.append(Object.assign(document.createElement("div"), { className: "menu-sep", role: "separator" }));
-    const item = Object.assign(document.createElement("button"), { textContent: label, tabIndex: -1 });
-    item.setAttribute("role", "menuitem");
-    item.addEventListener("click", () => {
-      closeOverlay(label === "Edit…" ? undefined : key);
-      action();
-    });
-    menu.append(item);
-  });
+  let buttons: HTMLButtonElement[] = [];
+  let filling = false; // swapping the items drops the focused one: not a focus leaving the menu
+  /** Shows `entries`; a submenu (`parent` set) starts with a back item. */
+  const fill = (entries: MenuEntry[], parent?: { label: string; entries: MenuEntry[] }) => {
+    filling = true;
+    menu.replaceChildren();
+    const button = (label: string, act: () => void, extra = "") => {
+      const item = Object.assign(document.createElement("button"), { tabIndex: -1 });
+      item.innerHTML = extra;
+      item.append(Object.assign(document.createElement("span"), { className: "menu-label", textContent: label }));
+      item.setAttribute("role", "menuitem");
+      item.addEventListener("click", act);
+      menu.append(item);
+      return item;
+    };
+    if (parent) {
+      const back = button(parent.label, () => fill(parent.entries), '<span class="menu-back" aria-hidden="true">‹</span>');
+      back.dataset.back = "";
+      back.setAttribute("aria-label", `Back from ${parent.label}`);
+      menu.append(Object.assign(document.createElement("div"), { className: "menu-sep", role: "separator" }));
+    }
+    for (const entry of entries) {
+      if (entry === "-") {
+        menu.append(Object.assign(document.createElement("div"), { className: "menu-sep", role: "separator" }));
+        continue;
+      }
+      const dot = entry.colour ? `<span class="menu-dot" data-colour="${entry.colour}" aria-hidden="true"></span>` : "";
+      const item = button(entry.label, () => {
+        if (entry.sub) return fill(entry.sub, { label: entry.label, entries });
+        closeOverlay(entry.editor ? undefined : key);
+        entry.run?.();
+      }, dot);
+      if (entry.sub) {
+        item.setAttribute("aria-haspopup", "menu");
+        item.insertAdjacentHTML("beforeend", '<span class="menu-more" aria-hidden="true">›</span>');
+        item.dataset.sub = "";
+      }
+    }
+    buttons = [...menu.querySelectorAll<HTMLButtonElement>("button")];
+    buttons[parent ? Math.min(1, buttons.length - 1) : 0]!.focus();
+    filling = false;
+  };
+  fill(items);
   document.body.append(menu);
   const at = rowEl(key)!.getBoundingClientRect();
   const left = Math.min(x ?? at.left + 24, innerWidth - menu.offsetWidth - 4);
   const top = y ?? at.bottom;
   menu.style.left = `${Math.max(4, left)}px`;
   menu.style.top = `${top + menu.offsetHeight > innerHeight - 4 ? Math.max(4, top - menu.offsetHeight) : top}px`;
-  const buttons = [...menu.querySelectorAll<HTMLButtonElement>("button")];
   buttons[0]!.focus();
   menu.addEventListener("keydown", (e) => {
-    const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const current = document.activeElement as HTMLButtonElement;
+    const i = buttons.indexOf(current);
+    const back = menu.querySelector<HTMLButtonElement>("[data-back]");
     const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: buttons.length - 1 }[e.key];
     if (to !== undefined) buttons[(to + buttons.length) % buttons.length]!.focus();
+    else if (e.key === "ArrowRight" && current?.dataset.sub !== undefined) current.click();
+    else if ((e.key === "ArrowLeft" || e.key === "Escape") && back) back.click();
     else if (e.key === "Escape" || e.key === "Tab") closeOverlay(key);
     else return;
     e.preventDefault();
   });
   menu.addEventListener("focusout", (e) => {
-    if (!menu.contains(e.relatedTarget as Node | null) && overlay?.kind === "menu") closeOverlay(undefined);
+    if (!filling && !menu.contains(e.relatedTarget as Node | null) && overlay?.kind === "menu") closeOverlay(undefined);
   });
 }
 
@@ -371,12 +571,13 @@ const validUrl = (url: string) => {
   }
 };
 
-/** Edits a folder's title, or a bookmark's title and URL, in place. Enter or leaving the row
- *  saves, Escape cancels; an unusable URL keeps the editor open (or, on leaving, is dropped). */
+/** Edits a folder's title, a bookmark's title and URL, or a tab group's title and colour, in
+ *  place. Enter or leaving the row saves, Escape cancels; an unusable URL keeps the editor open
+ *  (or, on leaving, is dropped). */
 function openEditor(key: string): void {
   const row = findRow(key);
   const el = rowEl(key);
-  if (!editable(row) || !el) return;
+  if (!(editable(row) || row?.kind === "group") || !el) return;
   closeOverlay(undefined);
   overlay = { kind: "editor", key };
   el.classList.add("editing");
@@ -389,27 +590,31 @@ function openEditor(key: string): void {
     fields.append(input);
     return input;
   };
-  const title = field(row.kind === "folder" ? "Folder name" : "Name", row.kind === "bookmark" ? row.savedTitle : row.title);
+  const title = field(row.kind === "group" ? "Group name" : row.kind === "folder" ? "Folder name" : "Name", row.kind === "bookmark" ? row.savedTitle : row.title);
   const url = row.kind === "bookmark" ? field("URL", row.url) : undefined;
   el.querySelector(".label")!.replaceWith(fields);
   el.querySelector(".folder-count")?.remove();
+  el.querySelector(".sel-dot")?.remove();
 
-  // The icon slot becomes a button that opens the icon picker. `chosen`: undefined = unchanged,
-  // null = back to the default (site or folder) icon.
+  // The icon slot becomes a button that opens the icon picker (a group's: its colour). `chosen`:
+  // undefined = unchanged, null = back to the default (site or folder) icon.
   let chosen: string | null | undefined;
-  const slot = el.querySelector<HTMLElement>(".ico")!;
+  const slot = el.querySelector<HTMLElement>(".ico");
   // Resolved each time it's shown, so a site-icons switch-off while editing is respected.
-  const defaultIcon = () => (row.kind === "folder" ? ICON.folder : favicon(row.url, true));
+  const defaultIcon = () => (row.kind === "bookmark" ? favicon(row.url, true) : ICON.folder);
+  const current = row.kind === "group" ? folderIcon(row.colour) : row.icon;
+  const what = row.kind === "group" ? "colour" : "icon";
   const iconButton = Object.assign(document.createElement("button"), { className: "icon-pick", type: "button" });
-  iconButton.setAttribute("aria-label", "Choose icon");
+  iconButton.setAttribute("aria-label", `Choose ${what}`);
   iconButton.setAttribute("aria-haspopup", "dialog");
-  iconButton.title = "Choose icon";
+  iconButton.title = `Choose ${what}`;
   const showIcon = () => {
-    const icon = chosen === undefined ? row.icon : chosen ?? undefined;
+    const icon = chosen === undefined ? current : chosen ?? undefined;
     iconButton.innerHTML = icon !== undefined ? iconHtml(icon) : defaultIcon();
   };
   showIcon();
-  slot.replaceWith(iconButton);
+  if (slot) slot.replaceWith(iconButton);
+  else fields.before(iconButton);
   let picker: HTMLElement | undefined;
   const inside = (node: Node | null) => !!node && (el.contains(node) || !!picker?.contains(node));
   const closePicker = (focus: HTMLElement | undefined) => {
@@ -425,7 +630,7 @@ function openEditor(key: string): void {
       chosen = icon;
       showIcon();
       closePicker(title);
-    }, () => closePicker(iconButton), row.kind === "folder");
+    }, () => closePicker(iconButton), row.kind === "group" ? "colours" : row.kind);
     picker.addEventListener("focusout", (ev) => {
       if (!inside(ev.relatedTarget as Node | null)) finish(true, true);
     });
@@ -450,6 +655,13 @@ function openEditor(key: string): void {
       save = false;
     }
     closePicker(undefined);
+    if (row.kind === "group") {
+      const colour = folderColour(chosen ?? undefined);
+      const recoloured = colour !== undefined && colour !== row.colour;
+      if (save && (recoloured || t !== row.title)) void sidebar.run({ type: "editGroup", id: row.id, title: t, ...(recoloured && { colour }) }).catch(report);
+      deferred = true; // Chrome's group event brings the new values
+      return closeOverlay(leaving ? undefined : key);
+    }
     const iconChanged = chosen !== undefined && chosen !== (row.icon ?? null);
     const changed = iconChanged || t !== (row.kind === "bookmark" ? row.savedTitle : row.title) || (u !== undefined && row.kind === "bookmark" && u !== row.url);
     if (save && changed) {
@@ -477,18 +689,19 @@ const ICON_CHOICES = [...new Intl.Segmenter(undefined, { granularity: "grapheme"
 const SYSTEM_PICKER = /Mac/.test(navigator.platform) ? "⌃⌘Space" : "Win+.";
 
 /** The editor's icon picker: for a folder, a row of folder colours; a grid of common emoji; a
- *  field for any other emoji (where the system's emoji picker works); and Default icon. Escape
- *  closes it without a choice. */
-function iconPicker(choose: (icon: string | null) => void, cancel: () => void, forFolder: boolean): HTMLElement {
+ *  field for any other emoji (where the system's emoji picker works); and Default icon. For a
+ *  tab group (`colours`), the row of colours alone. Escape closes it without a choice. */
+function iconPicker(choose: (icon: string | null) => void, cancel: () => void, kind: "bookmark" | "folder" | "colours"): HTMLElement {
   const box = document.createElement("div");
-  box.className = "icon-picker";
+  box.className = `icon-picker${kind === "colours" ? " colours-only" : ""}`;
   box.setAttribute("role", "dialog");
-  box.setAttribute("aria-label", "Choose icon");
-  if (forFolder) {
+  box.setAttribute("aria-label", kind === "colours" ? "Choose colour" : "Choose icon");
+  if (kind !== "bookmark") {
     const colours = document.createElement("div");
     colours.className = "colour-row";
     for (const colour of FOLDER_COLOURS) {
-      const b = Object.assign(document.createElement("button"), { type: "button", title: `${colour[0]!.toUpperCase()}${colour.slice(1)} folder` });
+      const name = `${colour[0]!.toUpperCase()}${colour.slice(1)}`;
+      const b = Object.assign(document.createElement("button"), { type: "button", title: kind === "colours" ? name : `${name} folder` });
       b.setAttribute("aria-label", b.title);
       b.dataset.colour = colour;
       b.innerHTML = iconHtml(folderIcon(colour));
@@ -497,6 +710,13 @@ function iconPicker(choose: (icon: string | null) => void, cancel: () => void, f
     }
     box.append(colours);
   }
+  box.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    cancel();
+  });
+  if (kind === "colours") return box;
   const grid = document.createElement("div");
   grid.className = "icon-grid";
   for (const icon of ICON_CHOICES) {
@@ -516,16 +736,10 @@ function iconPicker(choose: (icon: string | null) => void, cancel: () => void, f
   foot.className = "icon-foot";
   foot.append(other, reset);
   box.append(grid, foot);
-  box.addEventListener("keydown", (e) => {
-    e.stopPropagation();
-    if (e.key !== "Escape") return;
-    e.preventDefault();
-    cancel();
-  });
   return box;
 }
 
-// --- Drag and drop: bookmarks and folders move, a tab dropped in Bookmarks is saved there. -------
+// --- Drag and drop: bookmarks and folders move, a tab or group dropped in Bookmarks is saved there.
 const DRAG_TYPE = "application/x-sidebar-row"; // only our own drags; links from pages are ignored
 let dragSource: DragSource | undefined;
 let dropMark: HTMLElement | undefined;
@@ -551,6 +765,7 @@ app.addEventListener("dragstart", (e) => {
   const row = findRow(rowOf(e.target)?.dataset.key);
   if (!row || !e.dataTransfer || (overlay?.kind === "editor" && overlay.key === row.key)) return;
   if (row.kind === "tab") dragSource = { kind: "tab", id: row.id };
+  else if (row.kind === "group") dragSource = { kind: "group", id: row.id };
   else if (editable(row)) dragSource = { kind: "bookmark", key: row.key };
   else return void e.preventDefault();
   e.dataTransfer.setData(DRAG_TYPE, row.key);
@@ -559,7 +774,7 @@ app.addEventListener("dragstart", (e) => {
     e.dataTransfer.setData("text/uri-list", row.url);
     e.dataTransfer.setData("text/plain", row.url);
   }
-  e.dataTransfer.effectAllowed = row.kind === "tab" ? "copyLink" : "copyMove";
+  e.dataTransfer.effectAllowed = row.kind === "tab" ? "copyLink" : row.kind === "group" ? "copy" : "copyMove";
   // A render during the drag (a folder opening on hover) replaces this row; its dragend then
   // never bubbles to #app, so listen on the row itself.
   rowOf(e.target)!.addEventListener("dragend", endDrag, { once: true });
@@ -586,7 +801,7 @@ app.addEventListener("dragover", (e) => {
     return stopExpand();
   }
   e.preventDefault();
-  e.dataTransfer.dropEffect = dragSource.kind === "tab" ? "copy" : "move";
+  e.dataTransfer.dropEffect = dragSource.kind === "bookmark" ? "move" : "copy";
   markDrop(at.el, at.key === "s:bookmarks" ? "after" : at.zone);
   // Hovering inside a closed folder opens it, so you can drop deeper.
   const row = findRow(at.key);
@@ -617,6 +832,8 @@ app.addEventListener("drop", (e) => {
   if (source.kind === "bookmark") {
     const row = findRow(source.key);
     if (row?.kind === "folder" || row?.kind === "bookmark") void sidebar.run({ type: "moveBookmark", id: row.id, to: place }).catch(report);
+  } else if (source.kind === "group") {
+    void sidebar.run({ type: "saveGroup", id: source.id, at: place }).catch(report);
   } else {
     const row = findRow(`t:${source.id}`);
     if (row?.kind === "tab") void sidebar.run({ type: "addBookmark", at: place, title: row.title, url: row.url }).catch(report);

@@ -1,7 +1,7 @@
 // Chrome adapter for the Sidebar's SidebarBrowser seam. Reads bookmarks and writes them only for a
-// Bookmark edit, reads the tabs of one window, and turns every bookmark, tab and Folding change
-// into a SidebarEvent, leaving the filtering to the session in sidebar.ts.
-import { NO_FOLDING, type BookmarkIcons, type BookmarkNode, type Folding, type IconChanges, type SidebarBrowser, type TabInfo } from "./sidebar";
+// Bookmark edit, reads the tabs and tab groups of one window, and turns every bookmark, tab, group
+// and Folding change into a SidebarEvent, leaving the filtering to the session in sidebar.ts.
+import { NO_FOLDING, type BookmarkIcons, type BookmarkNode, type Folding, type IconChanges, type ReopenedTab, type SidebarBrowser, type TabInfo } from "./sidebar";
 
 export const FOLDING_KEY = "sidebarFolding";
 /** One storage key per Bookmark icon: `icon:<bookmark id>`. */
@@ -11,7 +11,40 @@ export const ICON_KEY_PREFIX = "icon:";
 const toTabInfo = (t: chrome.tabs.Tab): TabInfo[] =>
   t.id === undefined || t.id === chrome.tabs.TAB_ID_NONE
     ? []
-    : [{ id: t.id, title: t.title ?? "", url: t.url || t.pendingUrl || "", active: t.active, audible: t.audible ?? false, pinned: t.pinned }];
+    : [{ id: t.id, title: t.title ?? "", url: t.url || t.pendingUrl || "", active: t.active, audible: t.audible ?? false, pinned: t.pinned, groupId: t.groupId,
+        muted: t.mutedInfo?.muted ?? false, ...(t.splitViewId !== undefined && t.splitViewId !== -1 && { splitViewId: t.splitViewId }) }];
+
+/** Opens tabs again, in the background, at their old positions (ascending `index`), each on its
+ *  own, and back into their groups: the old one while it's still open, else one new group per old
+ *  one with its title and colour. Resolves to the tabs that couldn't be opened. */
+async function reopen(windowId: number, tabs: ReopenedTab[]): Promise<ReopenedTab[]> {
+  const failed: ReopenedTab[] = [];
+  const regrouped = new Map<number, number>(); // old group id → the group it reopens into
+  for (const tab of [...tabs].sort((a, b) => a.index - b.index)) {
+    let id: number | undefined;
+    try {
+      id = (await chrome.tabs.create({ windowId, index: tab.index, active: false, ...(tab.url && { url: tab.url }) })).id;
+    } catch {
+      failed.push(tab);
+      continue;
+    }
+    const was = tab.group;
+    if (!was || id === undefined) continue;
+    try {
+      let into = regrouped.get(was.id);
+      if (into === undefined && (await chrome.tabGroups.get(was.id).then((g) => g.windowId === windowId, () => false))) into = was.id;
+      if (into !== undefined) await chrome.tabs.group({ groupId: into, tabIds: [id] });
+      else {
+        into = await chrome.tabs.group({ tabIds: [id], createProperties: { windowId } });
+        await chrome.tabGroups.update(into, { title: was.title, color: was.colour });
+      }
+      regrouped.set(was.id, into);
+    } catch {
+      // Open, if not in its group.
+    }
+  }
+  return failed;
+}
 
 export const chromeSidebar: SidebarBrowser = {
   async currentWindowId() {
@@ -71,6 +104,12 @@ export const chromeSidebar: SidebarBrowser = {
     chrome.tabs.onAttached.addListener((_id, i) => tabs(i.newWindowId));
     chrome.tabs.onDetached.addListener((_id, i) => tabs(i.oldWindowId));
     chrome.tabs.onReplaced.addListener(() => tabs());
+    // A group's title, colour, collapsed state or place; its tabs' groupId changes come as tab updates.
+    const group = (g: chrome.tabGroups.TabGroup) => tabs(g.windowId);
+    chrome.tabGroups.onCreated.addListener(group);
+    chrome.tabGroups.onUpdated.addListener(group);
+    chrome.tabGroups.onRemoved.addListener(group);
+    chrome.tabGroups.onMoved.addListener(group);
 
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== "local") return;
@@ -106,15 +145,124 @@ export const chromeSidebar: SidebarBrowser = {
   },
 
   async reopenTabs(windowId, tabs) {
-    const failed = [];
-    for (const tab of [...tabs].sort((a, b) => a.index - b.index)) {
-      try {
-        await chrome.tabs.create({ windowId, index: tab.index, active: false, ...(tab.url && { url: tab.url }) });
-      } catch {
-        failed.push(tab);
-      }
+    return reopen(windowId, tabs);
+  },
+
+  async newTabAt(windowId, index, groupId) {
+    const tab = await chrome.tabs.create({ windowId, index, active: true });
+    if (tab.id === undefined) throw new Error("the new tab has no id");
+    if (groupId !== undefined) await chrome.tabs.group({ groupId, tabIds: [tab.id] });
+    return tab.id;
+  },
+
+  async groupTab(tabId, groupId) {
+    return chrome.tabs.group({ tabIds: [tabId], ...(groupId !== undefined && { groupId }) });
+  },
+
+  async moveTab(tabId, windowId, index) {
+    await chrome.tabs.move(tabId, { windowId, index });
+  },
+
+  async moveTabToNewWindow(tabId) {
+    await chrome.windows.create({ tabId, focused: true });
+  },
+
+  async reloadTab(tabId) {
+    await chrome.tabs.reload(tabId);
+  },
+
+  async duplicateTab(tabId) {
+    await chrome.tabs.duplicate(tabId);
+  },
+
+  async updateTab(tabId, { pinned, muted }) {
+    await chrome.tabs.update(tabId, { ...(pinned !== undefined && { pinned }), ...(muted !== undefined && { muted }) });
+  },
+
+  canSplit: typeof chrome.tabs.createSplit === "function",
+
+  async createSplit(tabIds) {
+    await chrome.tabs.createSplit(tabIds);
+  },
+
+  async unsplit(splitViewId) {
+    await chrome.tabs.unsplit(splitViewId);
+  },
+
+  async openTabs(windowId, urls) {
+    const opened: number[] = [];
+    for (const url of urls) {
+      const id = await chrome.tabs.create({ windowId, url, active: false }).then((t) => t.id, () => undefined);
+      if (id !== undefined) opened.push(id);
     }
-    return failed;
+    return opened;
+  },
+
+  async groupTabs(windowId, tabIds, title, colour) {
+    const id = await chrome.tabs.group({ tabIds: tabIds as [number, ...number[]], createProperties: { windowId } });
+    await chrome.tabGroups.update(id, { title, ...(colour !== undefined && { color: colour }) });
+    return id;
+  },
+
+  async openWindow(urls, incognito) {
+    // One call with every page: an extension kept out of incognito ("not_allowed") can open an
+    // incognito window but gets no handle on it to add tabs afterwards (checked in Chrome 158).
+    await chrome.windows.create({ url: urls, focused: true, ...(incognito && { incognito: true }) });
+  },
+
+  async groupTitles() {
+    return (await chrome.tabGroups.query({})).map((g) => g.title ?? "");
+  },
+
+  async otherWindows(windowId) {
+    const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
+    return windows.flatMap((w) => {
+      if (w.id === undefined || w.id === windowId || w.incognito) return [];
+      const tabs = w.tabs ?? [];
+      const shown = tabs.find((t) => t.active);
+      return [{ id: w.id, title: shown?.title || shown?.url || "Window", tabs: tabs.length }];
+    });
+  },
+
+  async tabGroups(windowId) {
+    return (await chrome.tabGroups.query({ windowId })).map((g) => ({ id: g.id, title: g.title ?? "", colour: g.color, collapsed: g.collapsed }));
+  },
+
+  async updateGroup(groupId, { title, colour, collapsed }) {
+    await chrome.tabGroups.update(groupId, { ...(title !== undefined && { title }), ...(colour !== undefined && { color: colour }), ...(collapsed !== undefined && { collapsed }) });
+  },
+
+  async moveGroupToNewWindow(groupId) {
+    // A new window comes with a New Tab; the group goes in after it, and then the New Tab goes.
+    const win = await chrome.windows.create({ focused: true });
+    const windowId = win?.id;
+    if (windowId === undefined) throw new Error("the new window has no id");
+    try {
+      await chrome.tabGroups.move(groupId, { windowId, index: -1 });
+    } catch (error) {
+      await chrome.windows.remove(windowId);
+      throw error;
+    }
+    const placeholder = win?.tabs?.[0]?.id;
+    if (placeholder !== undefined) await chrome.tabs.remove(placeholder);
+  },
+
+  async closeGroups(groupIds) {
+    // Closing a window keeps its groups in Chrome's saved tab groups, as Chrome's own Close group
+    // does; removing a group's tabs deletes it from them, as its Delete group does (both checked
+    // in Chrome 158). The tabGroups API has no close of its own, so: the groups move into a
+    // minimized window of their own, which then closes.
+    const windowId = (await chrome.windows.create({ focused: false, state: "minimized" }))?.id;
+    if (windowId === undefined) throw new Error("the new window has no id");
+    try {
+      for (const groupId of groupIds) await chrome.tabGroups.move(groupId, { windowId, index: -1 });
+    } finally {
+      await chrome.windows.remove(windowId);
+    }
+  },
+
+  async ungroupTabs(tabIds) {
+    await chrome.tabs.ungroup(tabIds as [number, ...number[]]);
   },
 
   async moveBookmark(id, to) {

@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "Compact Sidebar",
+  "name": "Custom Sidebar",
   "description": "A compact side panel with your bookmarks above this window's tabs, plus an optional nightly sweep of unused tabs.",
   "version": "0.6.0",
   "minimum_chrome_version": "150",
   "background": { "service_worker": "background.js", "type": "module" },
-  "permissions": ["alarms", "bookmarks", "favicon", "sidePanel", "storage", "tabs", "webNavigation"],
+  "permissions": ["alarms", "bookmarks", "favicon", "sidePanel", "storage", "tabGroups", "tabs", "webNavigation"],
   "side_panel": { "default_path": "panel.html" },
   "action": {
     "default_title": "Bookmarks and tabs",

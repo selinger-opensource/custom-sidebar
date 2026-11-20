@@ -117,6 +117,15 @@ describe("planSweep", () => {
     expect(plan.kept.audible).toBe(1);
   });
 
+  test("pinned tabs and tabs in a group survive", () => {
+    const pinned = tab({ pinned: true });
+    const grouped = tab({ grouped: true });
+    const stale = tab();
+    const plan = planSweep([win([pinned, grouped, stale])], {}, now);
+    expect(plan.close).toEqual([stale.id]);
+    expect(plan.kept).toMatchObject({ pinned: 1, grouped: 1 });
+  });
+
   test("only the focused window's selected tab is protected as in use", () => {
     const focusedActive = tab({ active: true });
     const unfocusedActive = tab({ active: true });
